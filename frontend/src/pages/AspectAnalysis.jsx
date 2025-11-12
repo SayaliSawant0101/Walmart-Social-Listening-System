@@ -9,6 +9,12 @@ import { useDate } from "../contexts/DateContext";
 // Helper function to format date
 function iso(x) {
   if (!x) return "";
+  // HTML date inputs already return YYYY-MM-DD format, so use it directly
+  // This prevents timezone issues where Date() constructor can shift dates
+  if (typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x)) {
+    return x;
+  }
+  // Fallback for other date formats
   const d = new Date(x);
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
