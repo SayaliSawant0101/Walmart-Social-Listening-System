@@ -13,6 +13,8 @@ import traceback
 import os
 from io import StringIO, BytesIO
 
+DATA_DIR = os.getenv("LOCAL_DATA_DIR", "data")
+
 # LLM summaries (exec summary + structured brief)
 from src.llm.summary import build_executive_summary, summarize_tweets
 
@@ -29,14 +31,14 @@ def _read_openai_key() -> str:
 from src.features.themes import compute_themes_payload
 
 # Load raw tweets data for theme generation
-RAW_TWEETS_PATH = "data/tweets_stage0_raw.parquet"
-RAW_TWEETS_PATH_COMP = "data/tweets_stage0_raw_comp.parquet"
+RAW_TWEETS_PATH = f"{DATA_DIR}/tweets_stage0_raw.parquet"
+RAW_TWEETS_PATH_COMP = f"{DATA_DIR}/tweets_stage0_raw_comp.parquet"
 
 # ------------ Paths ------------
-SENTI_PATH   = "data/tweets_stage1_sentiment.parquet"
-ASPECT_PATH  = "data/tweets_stage2_aspects.parquet"
-STAGE3_PATH  = "data/tweets_stage3_aspect_sentiment.parquet"  # optional cache (no dates)
-STAGE3_THEMES_PARQUET = "data/tweets_stage3_themes.parquet"   # written by /themes
+SENTI_PATH = f"{DATA_DIR}/tweets_stage1_sentiment.parquet"
+ASPECT_PATH = f"{DATA_DIR}/tweets_stage2_aspects.parquet"
+STAGE3_PATH = f"{DATA_DIR}/tweets_stage3_aspect_sentiment.parquet"  # optional cache (no dates)
+STAGE3_THEMES_PARQUET = f"{DATA_DIR}/tweets_stage3_themes.parquet"  # written by /themes
 
 app = FastAPI(title="Walmart Social Listener API")
 
@@ -1005,7 +1007,7 @@ def download_theme_tweets_report(
     """Download PDF report for specific theme tweets"""
     try:
         # Load theme data
-        themes_df = pd.read_parquet("data/tweets_stage3_themes.parquet")
+        themes_df = pd.read_parquet(STAGE3_THEMES_PARQUET)
         
         # Filter by theme ID
         theme_tweets = themes_df[themes_df['theme'] == theme_id]
@@ -1031,7 +1033,7 @@ def download_theme_tweets_report(
         for cache_file in os.listdir("data"):
             if cache_file.startswith("themes_cache_"):
                 try:
-                    with open(f"data/{cache_file}", 'r') as f:
+                    with open(f"{DATA_DIR}/{cache_file}", "r") as f:
                         cache_data = json.load(f)
                         for theme in cache_data.get('themes', []):
                             if theme.get('id') == theme_id:
