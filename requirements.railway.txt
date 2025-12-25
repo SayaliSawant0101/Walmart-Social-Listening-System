@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pandas
+pyarrow
+boto3
+python-dotenv
+requests
