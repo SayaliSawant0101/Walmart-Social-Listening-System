@@ -1,6 +1,6 @@
 # src/features/themes.py 
 from __future__ import annotations
-import os, json, re, traceback
+import os, json, re, traceback, time
 from typing import Dict, List, Optional
 import pandas as pd
 
@@ -178,7 +178,12 @@ def _mmr_select(themes_all: List[dict], texts_by_cluster: Dict[int, List[str]], 
     vec = TfidfVectorizer(max_features=4000, stop_words="english", ngram_range=(1,2))
     X = vec.fit_transform(joined).astype("float32")
     X = _sk_normalize(X)
-    sims = (X @ X.T).A  # cosine sim (clusters x clusters)
+    # Convert sparse matrix to dense array for similarity computation
+    sims_result = X @ X.T  # cosine sim (clusters x clusters)
+    if hasattr(sims_result, 'toarray'):
+        sims = sims_result.toarray()
+    else:
+        sims = sims_result  # Already dense
 
     # Normalize tweet_count to 0..1 for comparability
     sizes = np.array([t["tweet_count"] for t in themes_all], dtype=float)
@@ -304,6 +309,7 @@ def compute_themes_payload(
 
     # ---------- TF-IDF keywords per theme (Optimized) ----------
     from sklearn.feature_extraction.text import TfidfVectorizer
+    import numpy as np
     tfidf_kws: Dict[int, List[str]] = {}
     for tid, sub in df.groupby("theme"):
         sub_texts = sub[text_col].astype(str).tolist()
@@ -315,7 +321,17 @@ def compute_themes_payload(
             sub_texts = sub_texts[:500]
         vec = TfidfVectorizer(max_features=2000, stop_words="english", ngram_range=(1,2))  # Reduced features
         X = vec.fit_transform(sub_texts)
-        scores = X.mean(axis=0).A1
+        # Convert sparse matrix mean to 1D array
+        # X.mean(axis=0) returns a sparse matrix, convert to dense array
+        mean_result = X.mean(axis=0)
+        if hasattr(mean_result, 'toarray'):
+            scores = mean_result.toarray().flatten()
+        elif hasattr(mean_result, 'A1'):
+            # Fallback for older scipy versions
+            scores = mean_result.A1
+        else:
+            # Already a numpy array
+            scores = np.asarray(mean_result).flatten()
         feats = vec.get_feature_names_out()
         top_idx = scores.argsort()[::-1][:6]
         toks = [f for f in feats[top_idx] if f.split()[0] not in _STOP]
@@ -374,23 +390,32 @@ def compute_themes_payload(
 
         title = fallback_title
         if client:
-            try:
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role":"system","content":TITLE_SYSTEM},
-                        {"role":"user","content":TITLE_USER_TMPL.format(kws=kws_prompt)}
-                    ],
-                    temperature=0.2,
-                    max_tokens=24,
-                    timeout=10  # Add timeout to prevent hanging
-                )
-                t = (resp.choices[0].message.content or "").strip().strip('"')
-                if t:
-                    title = t
-            except Exception:
-                print(f"[OpenAI title error for theme {tid}]")
-                # Use fallback title
+            # Retry logic for OpenAI API calls
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role":"system","content":TITLE_SYSTEM},
+                            {"role":"user","content":TITLE_USER_TMPL.format(kws=kws_prompt)}
+                        ],
+                        temperature=0.2,
+                        max_tokens=24,
+                        timeout=15  # Increased timeout
+                    )
+                    t = (resp.choices[0].message.content or "").strip().strip('"')
+                    if t:
+                        title = t
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 1  # Exponential backoff: 1s, 2s
+                        print(f"[OpenAI title error for theme {tid}, attempt {attempt + 1}/{max_retries}]: {str(e)}. Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"[OpenAI title error for theme {tid} after {max_retries} attempts]: {str(e)}. Using fallback title.")
+                        # Use fallback title
 
         theme_names[tid] = title
 
@@ -407,24 +432,33 @@ def compute_themes_payload(
 
         if client:
             ex = [str(x) for x in sub[text_col].astype(str).head(2).tolist()]  # Reduced examples
-            try:
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role":"system","content":SUMMARY_SYSTEM},
-                        {"role":"user","content":SUMMARY_USER_TMPL.format(
-                            title=title, kws=kws_prompt, examples=ex
-                        )}
-                    ],
-                    temperature=0.3,
-                    max_tokens=120,  # Increased for 3-4 lines
-                    timeout=10  # Add timeout
-                )
-                s = (resp.choices[0].message.content or "").strip()
-                summaries[tid] = s or base_summary
-            except Exception:
-                print(f"[OpenAI summary error for theme {tid}]")
-                summaries[tid] = base_summary
+            # Retry logic for OpenAI API calls
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role":"system","content":SUMMARY_SYSTEM},
+                            {"role":"user","content":SUMMARY_USER_TMPL.format(
+                                title=title, kws=kws_prompt, examples=ex
+                            )}
+                        ],
+                        temperature=0.3,
+                        max_tokens=120,  # Increased for 3-4 lines
+                        timeout=15  # Increased timeout
+                    )
+                    s = (resp.choices[0].message.content or "").strip()
+                    summaries[tid] = s or base_summary
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 1  # Exponential backoff: 1s, 2s
+                        print(f"[OpenAI summary error for theme {tid}, attempt {attempt + 1}/{max_retries}]: {str(e)}. Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"[OpenAI summary error for theme {tid} after {max_retries} attempts]: {str(e)}. Using fallback summary.")
+                        summaries[tid] = base_summary
         else:
             summaries[tid] = base_summary
 

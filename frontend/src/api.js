@@ -90,6 +90,24 @@ export async function fetchThemes({
   return data; // { updated_at, themes: [{id, name, summary, tweet_count}] }
 }
 
+// --- Themes for Competitor (Costco) ---
+export async function fetchThemesCompetitor({
+  start = null,
+  end = null,
+  n_clusters = null, // Auto-detect if null
+  emb_model = "sentence-transformers/all-MiniLM-L6-v2",
+} = {}) {
+  // Build params without null/empty values
+  const params = {};
+  if (start) params.start = start;
+  if (end) params.end = end;
+  if (n_clusters !== null) params.n_clusters = n_clusters;
+  if (emb_model) params.emb_model = emb_model;
+
+  const { data } = await LONG_API.get("/themes/competitor", { params });
+  return data; // { updated_at, themes: [{id, name, summary, tweet_count}] }
+}
+
 // --- Raw Data Downloads ---
 export async function downloadRawTweets(start, end, format = 'csv') {
   const response = await API.get("/tweets/raw", {

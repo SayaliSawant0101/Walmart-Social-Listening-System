@@ -30,6 +30,7 @@ from src.features.themes import compute_themes_payload
 
 # Load raw tweets data for theme generation
 RAW_TWEETS_PATH = "data/tweets_stage0_raw.parquet"
+RAW_TWEETS_PATH_COMP = "data/tweets_stage0_raw_comp.parquet"
 
 # ------------ Paths ------------
 SENTI_PATH   = "data/tweets_stage1_sentiment.parquet"
@@ -488,38 +489,197 @@ def themes(
     n_clusters: Optional[int] = Query(default=None, ge=1, le=8),  # Auto-detect if None
     emb_model: str       = Query(default="sentence-transformers/all-MiniLM-L6-v2"),
     merge_similar: bool  = Query(default=True, description="Automatically merge similar themes"),
+    force_refresh: bool = Query(default=False, description="Force regeneration even if cached"),
 ):
     """
     Returns:
       { updated_at, used_llm, themes: [{id,name,summary,tweet_count,positive,negative,neutral}] }
     """
     key = (start, end, n_clusters, emb_model)
-    # Clear cache to force regeneration with improved logic
-    if key in _THEMES_CACHE:
-        del _THEMES_CACHE[key]
+    
+    # Check cache first (unless force_refresh is True)
+    if not force_refresh and key in _THEMES_CACHE:
+        print(f"[/themes] Returning cached result for key: {key}")
+        return _THEMES_CACHE[key]
 
     try:
-        # Load raw tweets data for theme generation
-        df = pd.read_parquet(RAW_TWEETS_PATH)
+        print(f"[/themes] Generating themes for date range: {start} to {end}, clusters: {n_clusters}")
         
+        # Check if raw tweets file exists
+        if not os.path.exists(RAW_TWEETS_PATH):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": f"Raw tweets file not found: {RAW_TWEETS_PATH}",
+                    "hint": "Ensure the data file exists and the path is correct.",
+                },
+            )
+        
+        # Load raw tweets data for theme generation
+        print(f"[/themes] Loading raw tweets from {RAW_TWEETS_PATH}")
+        df = pd.read_parquet(RAW_TWEETS_PATH)
+        print(f"[/themes] Loaded {len(df)} tweets")
+        
+        # Get OpenAI key
+        openai_key = _read_openai_key()
+        if not openai_key:
+            print("[/themes] Warning: No OpenAI API key found. Theme names/summaries will use fallback values.")
+        
+        print(f"[/themes] Computing themes payload...")
         payload = compute_themes_payload(
             df=df,
             start_date=start,
             end_date=end,
             n_clusters=n_clusters,
-            openai_api_key=_read_openai_key(),
+            openai_api_key=openai_key,
+            merge_similar=merge_similar,
         )
+        
+        # Cache the result
         _THEMES_CACHE[key] = payload
+        print(f"[/themes] Successfully generated {len(payload.get('themes', []))} themes")
         return payload
-    except Exception as e:
+    except FileNotFoundError as e:
         tb = traceback.format_exc()
-        print("[/themes ERROR]", e, "\n", tb)
+        print("[/themes ERROR] File not found:", e, "\n", tb)
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": f"Data file not found: {str(e)}",
+                "hint": "Ensure the data files exist in the data/ directory.",
+            },
+        )
+    except MemoryError as e:
+        tb = traceback.format_exc()
+        print("[/themes ERROR] Memory error:", e, "\n", tb)
         return JSONResponse(
             status_code=500,
             content={
-                "error": str(e),
-                "hint": "Check OpenAI key, sklearn/torch availability, date range, and data paths.",
-                "trace_tail": tb.splitlines()[-6:],
+                "error": "Insufficient memory to process themes",
+                "hint": "Try reducing the date range or number of clusters. The system is processing too much data at once.",
+            },
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        error_msg = str(e)
+        print("[/themes ERROR]", error_msg, "\n", tb)
+        
+        # Provide more specific error messages
+        hint = "Check OpenAI key, sklearn/torch availability, date range, and data paths."
+        if "OpenAI" in error_msg or "API" in error_msg:
+            hint = "OpenAI API error. Check your API key and network connection. Theme generation will continue with fallback names/summaries."
+        elif "timeout" in error_msg.lower():
+            hint = "Request timed out. Try reducing the date range or number of clusters."
+        elif "sklearn" in error_msg.lower() or "torch" in error_msg.lower():
+            hint = "Missing required library. Install sklearn and/or torch: pip install scikit-learn torch"
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": error_msg,
+                "hint": hint,
+                "trace_tail": tb.splitlines()[-10:],
+            },
+        )
+
+# --- Themes for Competitor (Costco) ---
+@app.get("/themes/competitor")
+def themes_competitor(
+    start: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    end:   Optional[str] = Query(default=None, description="YYYY-MM-DD"),
+    n_clusters: Optional[int] = Query(default=None, ge=1, le=8),  # Auto-detect if None
+    emb_model: str       = Query(default="sentence-transformers/all-MiniLM-L6-v2"),
+    merge_similar: bool  = Query(default=True, description="Automatically merge similar themes"),
+    force_refresh: bool = Query(default=False, description="Force regeneration even if cached"),
+):
+    """
+    Returns:
+      { updated_at, used_llm, themes: [{id,name,summary,tweet_count,positive,negative,neutral}] }
+    """
+    key = (start, end, n_clusters, emb_model, "competitor")
+    
+    # Check cache first (unless force_refresh is True)
+    if not force_refresh and key in _THEMES_CACHE:
+        print(f"[/themes/competitor] Returning cached result for key: {key}")
+        return _THEMES_CACHE[key]
+
+    try:
+        print(f"[/themes/competitor] Generating themes for date range: {start} to {end}, clusters: {n_clusters}")
+        
+        # Check if raw tweets file exists
+        if not os.path.exists(RAW_TWEETS_PATH_COMP):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": f"Raw tweets file not found: {RAW_TWEETS_PATH_COMP}",
+                    "hint": "Ensure the competitor data file exists and the path is correct.",
+                },
+            )
+        
+        # Load raw tweets data for theme generation
+        print(f"[/themes/competitor] Loading raw tweets from {RAW_TWEETS_PATH_COMP}")
+        df = pd.read_parquet(RAW_TWEETS_PATH_COMP)
+        print(f"[/themes/competitor] Loaded {len(df)} tweets")
+        
+        # Get OpenAI key
+        openai_key = _read_openai_key()
+        if not openai_key:
+            print("[/themes/competitor] Warning: No OpenAI API key found. Theme names/summaries will use fallback values.")
+        
+        print(f"[/themes/competitor] Computing themes payload...")
+        payload = compute_themes_payload(
+            df=df,
+            start_date=start,
+            end_date=end,
+            n_clusters=n_clusters,
+            openai_api_key=openai_key,
+            merge_similar=merge_similar,
+        )
+        
+        # Cache the result
+        _THEMES_CACHE[key] = payload
+        print(f"[/themes/competitor] Successfully generated {len(payload.get('themes', []))} themes")
+        return payload
+    except FileNotFoundError as e:
+        tb = traceback.format_exc()
+        print("[/themes/competitor ERROR] File not found:", e, "\n", tb)
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": f"Data file not found: {str(e)}",
+                "hint": "Ensure the competitor data files exist in the data/ directory.",
+            },
+        )
+    except MemoryError as e:
+        tb = traceback.format_exc()
+        print("[/themes/competitor ERROR] Memory error:", e, "\n", tb)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Insufficient memory to process themes",
+                "hint": "Try reducing the date range or number of clusters. The system is processing too much data at once.",
+            },
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        error_msg = str(e)
+        print("[/themes/competitor ERROR]", error_msg, "\n", tb)
+        
+        # Provide more specific error messages
+        hint = "Check OpenAI key, sklearn/torch availability, date range, and data paths."
+        if "OpenAI" in error_msg or "API" in error_msg:
+            hint = "OpenAI API error. Check your API key and network connection. Theme generation will continue with fallback names/summaries."
+        elif "timeout" in error_msg.lower():
+            hint = "Request timed out. Try reducing the date range or number of clusters."
+        elif "sklearn" in error_msg.lower() or "torch" in error_msg.lower():
+            hint = "Missing required library. Install sklearn and/or torch: pip install scikit-learn torch"
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": error_msg,
+                "hint": hint,
+                "trace_tail": tb.splitlines()[-10:],
             },
         )
 
