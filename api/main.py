@@ -36,11 +36,27 @@ RAW_TWEETS_PATH_COMP = f"{DATA_DIR}/tweets_stage0_raw_comp.parquet"
 
 # ------------ Paths ------------
 SENTI_PATH = f"{DATA_DIR}/tweets_stage1_sentiment.parquet"
+SENTI_PATH_COMP = f"{DATA_DIR}/tweets_stage1_sentiment_comp.parquet"  # Competitor (Costco) data
 ASPECT_PATH = f"{DATA_DIR}/tweets_stage2_aspects.parquet"
 STAGE3_PATH = f"{DATA_DIR}/tweets_stage3_aspect_sentiment.parquet"  # optional cache (no dates)
 STAGE3_THEMES_PARQUET = f"{DATA_DIR}/tweets_stage3_themes.parquet"  # written by /themes
 
 app = FastAPI(title="Walmart Social Listener API")
+
+# Global exception handler to catch any unhandled errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    tb = traceback.format_exc()
+    error_msg = str(exc)
+    print(f"[GLOBAL ERROR HANDLER] {error_msg}\n{tb}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": error_msg,
+            "hint": "An unexpected error occurred. Check server logs for details.",
+            "trace_tail": tb.splitlines()[-10:] if tb else [],
+        },
+    )
 
 # Allow calls from Vite dev server (add prod origins as needed)
 app.add_middleware(
@@ -178,8 +194,31 @@ df = _normalize_dates(df, _sent_date_col)
 SENT_MIN_DATE = df["date_only"].min()
 SENT_MAX_DATE = df["date_only"].max()
 
+# ------------ Load Competitor Sentiment (Stage 1) ------------
+df_comp = None
+SENT_COMP_MIN_DATE = None
+SENT_COMP_MAX_DATE = None
+if os.path.exists(SENTI_PATH_COMP):
+    try:
+        print(f"[API] Loading competitor data from {SENTI_PATH_COMP}")
+        df_comp = pd.read_parquet(SENTI_PATH_COMP)
+        print(f"[API] Loaded {len(df_comp)} competitor rows")
+        _sent_comp_date_col = _detect_date_col(df_comp)
+        df_comp = _normalize_dates(df_comp, _sent_comp_date_col)
+        SENT_COMP_MIN_DATE = df_comp["date_only"].min()
+        SENT_COMP_MAX_DATE = df_comp["date_only"].max()
+        print(f"[API] Competitor date range: {SENT_COMP_MIN_DATE} to {SENT_COMP_MAX_DATE}")
+    except Exception as e:
+        print(f"[API] Error loading competitor data: {e}")
+        import traceback
+        traceback.print_exc()
+        df_comp = None
+else:
+    print(f"[API] Competitor data file not found: {SENTI_PATH_COMP}")
+
 # ------------ Load Aspects (Stage 2) ------------
 ASPECTS = ["pricing", "delivery", "returns", "staff", "app/ux"]
+ASPECT_PATH_COMP = f"{DATA_DIR}/tweets_stage2_aspects_comp.parquet"  # Competitor aspects
 
 if os.path.exists(ASPECT_PATH):
     adf = pd.read_parquet(ASPECT_PATH)
@@ -191,6 +230,25 @@ else:
     adf = pd.DataFrame(columns=["date_only", "aspect_dominant", "sentiment_label"])
     ASPECT_MIN_DATE = SENT_MIN_DATE
     ASPECT_MAX_DATE = SENT_MAX_DATE
+
+# ------------ Load Competitor Aspects (Stage 2) ------------
+adf_comp = None
+ASPECT_COMP_MIN_DATE = None
+ASPECT_COMP_MAX_DATE = None
+if os.path.exists(ASPECT_PATH_COMP):
+    try:
+        print(f"[API] Loading competitor aspects from {ASPECT_PATH_COMP}")
+        adf_comp = pd.read_parquet(ASPECT_PATH_COMP)
+        _asp_comp_date_col = _detect_date_col(adf_comp)
+        adf_comp = _normalize_dates(adf_comp, _asp_comp_date_col)
+        ASPECT_COMP_MIN_DATE = adf_comp["date_only"].min()
+        ASPECT_COMP_MAX_DATE = adf_comp["date_only"].max()
+        print(f"[API] Loaded {len(adf_comp)} competitor aspect rows")
+    except Exception as e:
+        print(f"[API] Error loading competitor aspects: {e}")
+        adf_comp = None
+else:
+    print(f"[API] Competitor aspect file not found: {ASPECT_PATH_COMP}")
 
 # Optional cache without dates (Stage 3)
 stage3_df = None
@@ -214,6 +272,8 @@ def health():
         "aspect_date_range": {"min": str(ASPECT_MIN_DATE), "max": str(ASPECT_MAX_DATE)},
         "has_aspects": bool(len(adf) > 0),
         "has_stage3_cache": bool(stage3_df is not None),
+        "has_competitor_data": bool(df_comp is not None),
+        "competitor_date_range": {"min": str(SENT_COMP_MIN_DATE) if SENT_COMP_MIN_DATE else None, "max": str(SENT_COMP_MAX_DATE) if SENT_COMP_MAX_DATE else None},
         "env_loaded": os.path.exists(ROOT_DOTENV),
         "has_openai_key": bool(_read_openai_key()),
     }
@@ -265,6 +325,72 @@ def sentiment_trend(
         for _, r in daily.sort_values("date_only").iterrows()
     ]
     return {"start": str(start), "end": str(end), "trend": trend}
+
+# --- Competitor Sentiment (Costco) ---
+@app.get("/sentiment/competitor/summary")
+def sentiment_competitor_summary(
+    start: date = Query(default=None),
+    end:   date = Query(default=None),
+):
+    if df_comp is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Competitor data not available. Missing tweets_stage1_sentiment_comp.parquet"}
+        )
+    
+    s = start or SENT_COMP_MIN_DATE
+    e = end or SENT_COMP_MAX_DATE
+    
+    mask = (df_comp["date_only"] >= s) & (df_comp["date_only"] <= e)
+    sub = df_comp.loc[mask]
+    if sub.empty:
+        return {
+            "start": str(s), "end": str(e),
+            "total": 0,
+            "counts": {"positive": 0, "neutral": 0, "negative": 0},
+            "percent": {"positive": 0.0, "neutral": 0.0, "negative": 0.0},
+        }
+    return {"start": str(s), "end": str(e), **_sentiment_summary(sub)}
+
+@app.get("/sentiment/competitor/trend")
+def sentiment_competitor_trend(
+    start: date = Query(default=None),
+    end:   date = Query(default=None),
+):
+    if df_comp is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Competitor data not available. Missing tweets_stage1_sentiment_comp.parquet"}
+        )
+    
+    s = start or SENT_COMP_MIN_DATE
+    e = end or SENT_COMP_MAX_DATE
+    
+    mask = (df_comp["date_only"] >= s) & (df_comp["date_only"] <= e)
+    sub = df_comp.loc[mask]
+    if sub.empty:
+        return {"start": str(s), "end": str(e), "trend": []}
+
+    daily = (
+        sub.groupby(["date_only", "sentiment_label"])
+           .size().reset_index(name="count")
+           .pivot(index="date_only", columns="sentiment_label", values="count")
+           .fillna(0)
+    )
+    daily = (daily.div(daily.sum(axis=1), axis=0) * 100).reset_index()
+
+    for c in ["positive", "neutral", "negative"]:
+        if c not in daily.columns:
+            daily[c] = 0.0
+
+    trend = [
+        {"date": str(r["date_only"]),
+         "positive": float(r["positive"]),
+         "neutral":  float(r["neutral"]),
+         "negative": float(r["negative"])}
+        for _, r in daily.sort_values("date_only").iterrows()
+    ]
+    return {"start": str(s), "end": str(e), "trend": trend}
 
 # --- Aspects (simple distribution) ---
 @app.get("/aspects/summary")
@@ -404,6 +530,29 @@ def aspects_sentiment_split(
     sub = adf.loc[mask, ["aspect_dominant", "sentiment_label"]]
     return _aspect_split_from_subset(sub, ASPECTS, include_others)
 
+# --- Competitor Aspects (stacked bar: sentiment split per aspect) ---
+@app.get("/aspects/competitor/sentiment-split")
+def aspects_competitor_sentiment_split(
+    start: date = Query(default=None),
+    end:   date = Query(default=None),
+    as_percent: bool = Query(default=False),
+    include_others: bool = Query(default=False),
+):
+    if adf_comp is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Competitor aspect data not available. Missing tweets_stage2_aspects_comp.parquet"}
+        )
+    
+    s = start or ASPECT_COMP_MIN_DATE
+    e = end or ASPECT_COMP_MAX_DATE
+    if adf_comp.empty:
+        return _aspect_split_from_subset(pd.DataFrame(), ASPECTS, include_others)
+
+    mask = (adf_comp["date_only"] >= s) & (adf_comp["date_only"] <= e)
+    sub = adf_comp.loc[mask, ["aspect_dominant", "sentiment_label"]]
+    return _aspect_split_from_subset(sub, ASPECTS, include_others)
+
 # --- Executive summary over a date window (LLM-powered with fallback) ---
 @app.get("/executive-summary")
 def executive_summary(
@@ -526,7 +675,10 @@ def themes(
         # Get OpenAI key
         openai_key = _read_openai_key()
         if not openai_key:
-            print("[/themes] Warning: No OpenAI API key found. Theme names/summaries will use fallback values.")
+            print("[/themes] ⚠️  WARNING: No OpenAI API key found. Theme names/summaries will use fallback values.")
+            print("[/themes] To enable AI-generated themes, set the OPENAI_API_KEY environment variable.")
+        else:
+            print(f"[/themes] ✅ OpenAI API key found (length: {len(openai_key)}). AI generation enabled.")
         
         print(f"[/themes] Computing themes payload...")
         payload = compute_themes_payload(
@@ -540,7 +692,8 @@ def themes(
         
         # Cache the result
         _THEMES_CACHE[key] = payload
-        print(f"[/themes] Successfully generated {len(payload.get('themes', []))} themes")
+        ai_status = "✅ AI" if payload.get('used_llm') else "⚠️  Fallback"
+        print(f"[/themes] Successfully generated {len(payload.get('themes', []))} themes ({ai_status})")
         return payload
     except FileNotFoundError as e:
         tb = traceback.format_exc()
@@ -609,25 +762,65 @@ def themes_competitor(
     try:
         print(f"[/themes/competitor] Generating themes for date range: {start} to {end}, clusters: {n_clusters}")
         
-        # Check if raw tweets file exists
-        if not os.path.exists(RAW_TWEETS_PATH_COMP):
+        # Check if raw tweets file exists, fallback to sentiment file if available
+        df = None
+        if os.path.exists(RAW_TWEETS_PATH_COMP):
+            print(f"[/themes/competitor] Loading raw tweets from {RAW_TWEETS_PATH_COMP}")
+            try:
+                df = pd.read_parquet(RAW_TWEETS_PATH_COMP)
+                print(f"[/themes/competitor] Loaded {len(df)} tweets from raw file")
+            except Exception as e:
+                error_msg = f"Failed to load competitor raw data file: {str(e)}"
+                print(f"[/themes/competitor] ERROR: {error_msg}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": error_msg,
+                        "hint": "The competitor data file exists but could not be read. Please check if the file is corrupted.",
+                        "file_path": RAW_TWEETS_PATH_COMP,
+                    },
+                )
+        elif os.path.exists(SENTI_PATH_COMP):
+            # Fallback: use sentiment file if raw file doesn't exist
+            print(f"[/themes/competitor] Raw file not found, using sentiment file: {SENTI_PATH_COMP}")
+            try:
+                df = pd.read_parquet(SENTI_PATH_COMP)
+                print(f"[/themes/competitor] Loaded {len(df)} tweets from sentiment file")
+            except Exception as e:
+                error_msg = f"Failed to load competitor sentiment data file: {str(e)}"
+                print(f"[/themes/competitor] ERROR: {error_msg}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": error_msg,
+                        "hint": "The competitor sentiment data file exists but could not be read.",
+                        "file_path": SENTI_PATH_COMP,
+                    },
+                )
+        else:
+            error_msg = f"Competitor data file not found"
+            print(f"[/themes/competitor] ERROR: {error_msg}")
+            print(f"[/themes/competitor] Checked: {RAW_TWEETS_PATH_COMP}")
+            print(f"[/themes/competitor] Checked: {SENTI_PATH_COMP}")
             return JSONResponse(
                 status_code=404,
                 content={
-                    "error": f"Raw tweets file not found: {RAW_TWEETS_PATH_COMP}",
-                    "hint": "Ensure the competitor data file exists and the path is correct.",
+                    "error": error_msg,
+                    "hint": "The competitor (Costco) data file is missing. Please ensure either tweets_stage0_raw_comp.parquet or tweets_stage1_sentiment_comp.parquet exists in the data/ directory.",
+                    "file_paths": {
+                        "raw": RAW_TWEETS_PATH_COMP,
+                        "sentiment": SENTI_PATH_COMP
+                    },
                 },
             )
-        
-        # Load raw tweets data for theme generation
-        print(f"[/themes/competitor] Loading raw tweets from {RAW_TWEETS_PATH_COMP}")
-        df = pd.read_parquet(RAW_TWEETS_PATH_COMP)
-        print(f"[/themes/competitor] Loaded {len(df)} tweets")
         
         # Get OpenAI key
         openai_key = _read_openai_key()
         if not openai_key:
-            print("[/themes/competitor] Warning: No OpenAI API key found. Theme names/summaries will use fallback values.")
+            print("[/themes/competitor] ⚠️  WARNING: No OpenAI API key found. Theme names/summaries will use fallback values.")
+            print("[/themes/competitor] To enable AI-generated themes, set the OPENAI_API_KEY environment variable.")
+        else:
+            print(f"[/themes/competitor] ✅ OpenAI API key found (length: {len(openai_key)}). AI generation enabled.")
         
         print(f"[/themes/competitor] Computing themes payload...")
         payload = compute_themes_payload(
@@ -641,7 +834,8 @@ def themes_competitor(
         
         # Cache the result
         _THEMES_CACHE[key] = payload
-        print(f"[/themes/competitor] Successfully generated {len(payload.get('themes', []))} themes")
+        ai_status = "✅ AI" if payload.get('used_llm') else "⚠️  Fallback"
+        print(f"[/themes/competitor] Successfully generated {len(payload.get('themes', []))} themes ({ai_status})")
         return payload
     except FileNotFoundError as e:
         tb = traceback.format_exc()

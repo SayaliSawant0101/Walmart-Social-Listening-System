@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Line } from "react-chartjs-2";
 import "chart.js/auto";
-import { getSummary, getTrend, getAspectSentimentSplit } from "../api";
+import { getSummary, getTrend, getAspectSentimentSplit, getCompetitorSummary, getCompetitorTrend, getCompetitorAspectSentimentSplit } from "../api";
 import { useDate } from "../contexts/DateContext";
 
 // --- helpers ---
@@ -25,13 +25,16 @@ export default function Dashboard() {
   const { start, end, meta, setStart, setEnd, loading: metaLoading } = useDate();
   const [summary, setSummary] = useState(null);
   const [trend, setTrend] = useState([]);
+  const [competitorSummary, setCompetitorSummary] = useState(null);
+  const [competitorTrend, setCompetitorTrend] = useState([]);
+  const [selectedBrand, setSelectedBrand] = useState("all"); // "walmart", "costco", "all"
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [timePeriod, setTimePeriod] = useState("daily");
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMoreData, setHasMoreData] = useState(true);
   const [currentOffset, setCurrentOffset] = useState(0);
-  const [aspectSplitModal, setAspectSplitModal] = useState({ isOpen: false, sentiment: null, data: null });
+  const [aspectSplitModal, setAspectSplitModal] = useState({ isOpen: false, sentiment: null, data: null, showByBrand: false });
   const [loadingAspectSplit, setLoadingAspectSplit] = useState(false);
   const [selectedDateModal, setSelectedDateModal] = useState({ isOpen: false, date: null, data: null });
   const [loadingDateAspects, setLoadingDateAspects] = useState(false);
@@ -47,18 +50,43 @@ export default function Dashboard() {
         setErr("");
         setCurrentOffset(0);
         setHasMoreData(true);
-        const [s, t] = await Promise.all([
-          getSummary(start, end), 
-          getTrend(start, end, timePeriod, 0, 50)
-        ]);
-        setSummary(s);
-        setTrend(t?.trend || []);
-        setHasMoreData((t?.trend || []).length === 50);
+        
+        const promises = [];
+        
+        // Always load Walmart data
+        promises.push(
+          getSummary(start, end).then(s => ({ type: 'walmart', summary: s })),
+          getTrend(start, end, timePeriod, 0, 50).then(t => ({ type: 'walmart', trend: t?.trend || [] }))
+        );
+        
+        // Load competitor data if needed
+        if (selectedBrand === "costco" || selectedBrand === "all") {
+          promises.push(
+            getCompetitorSummary(start, end).then(s => ({ type: 'costco', summary: s })).catch(() => ({ type: 'costco', summary: null })),
+            getCompetitorTrend(start, end, timePeriod, 0, 50).then(t => ({ type: 'costco', trend: t?.trend || [] })).catch(() => ({ type: 'costco', trend: [] }))
+          );
+        }
+        
+        const results = await Promise.all(promises);
+        
+        results.forEach(result => {
+          if (result.type === 'walmart') {
+            if (result.summary) setSummary(result.summary);
+            if (result.trend) {
+              setTrend(result.trend);
+              setHasMoreData(result.trend.length === 50);
+            }
+          } else if (result.type === 'costco') {
+            if (result.summary) setCompetitorSummary(result.summary);
+            if (result.trend) setCompetitorTrend(result.trend);
+          }
+        });
         
         // Pre-fetch tweet counts for all dates to cache them
-        if (t?.trend && t.trend.length > 0) {
+        const walmartTrend = results.find(r => r.type === 'walmart' && r.trend)?.trend || [];
+        if (walmartTrend.length > 0) {
           const countsCache = {};
-          const promises = t.trend.map(async (trendItem) => {
+          const promises = walmartTrend.map(async (trendItem) => {
             const counts = await getTweetCountsForDate(trendItem.date);
             if (counts) {
               countsCache[trendItem.date] = counts;
@@ -77,7 +105,7 @@ export default function Dashboard() {
         setLoading(false);
       }
     })();
-  }, [start, end, timePeriod]);
+  }, [start, end, timePeriod, selectedBrand]);
 
   // ---- load more trend data ----
   const loadMoreData = async () => {
@@ -292,50 +320,81 @@ export default function Dashboard() {
   const loadAspectSplit = async (sentiment) => {
     try {
       setLoadingAspectSplit(true);
-      const data = await getAspectSentimentSplit(start, end, true, true); // Include others
       
+      // Fetch data based on selected brand
+      let walmartData = null;
+      let costcoData = null;
       
-      // Transform the API response to match our expected format
-      let filteredData = [];
-      
-      if (data?.labels && data?.counts && data?.percent) {
-        // Transform the API response structure
-        const labels = data.labels;
-        const counts = data.counts[sentiment.toLowerCase()] || [];
-        const percentages = data.percent[sentiment.toLowerCase()] || [];
-        
-        filteredData = labels.map((aspect, index) => ({
-          aspect: aspect === 'others' ? 'Others' : aspect.charAt(0).toUpperCase() + aspect.slice(1),
-          count: counts[index] || 0,
-          percentage: percentages[index] || 0,
-          sentiment: sentiment.toLowerCase()
-        }));
-      } else {
-        // Fallback for other data structures
-        if (data?.aspects) {
-          filteredData = data.aspects.filter(aspect => 
-            aspect.sentiment?.toLowerCase() === sentiment.toLowerCase()
-          );
-        } else if (Array.isArray(data)) {
-          filteredData = data.filter(aspect => 
-            aspect.sentiment?.toLowerCase() === sentiment.toLowerCase()
-          );
-        } else if (data?.[sentiment.toLowerCase()]) {
-          filteredData = data[sentiment.toLowerCase()] || [];
-        } else {
-          const allAspects = Object.values(data || {}).flat();
-          filteredData = allAspects.filter(aspect => 
-            aspect.sentiment?.toLowerCase() === sentiment.toLowerCase()
-          );
+      if (selectedBrand === "walmart" || selectedBrand === "all") {
+        try {
+          walmartData = await getAspectSentimentSplit(start, end, true, true);
+        } catch (error) {
+          console.error("Failed to load Walmart aspects:", error);
         }
       }
       
+      if (selectedBrand === "costco" || selectedBrand === "all") {
+        try {
+          costcoData = await getCompetitorAspectSentimentSplit(start, end, true, true);
+        } catch (error) {
+          console.error("Failed to load Costco aspects:", error);
+        }
+      }
       
-      setAspectSplitModal({
-        isOpen: true,
-        sentiment: sentiment,
-        data: filteredData
-      });
+      // Transform data based on brand selection
+      if (selectedBrand === "all") {
+        // Show both brands separately
+        const walmartFiltered = walmartData?.labels && walmartData?.counts && walmartData?.percent
+          ? walmartData.labels.map((aspect, index) => ({
+              aspect: aspect === 'others' ? 'Others' : aspect.charAt(0).toUpperCase() + aspect.slice(1),
+              count: walmartData.counts[sentiment.toLowerCase()]?.[index] || 0,
+              percentage: walmartData.percent[sentiment.toLowerCase()]?.[index] || 0,
+              sentiment: sentiment.toLowerCase(),
+              brand: 'Walmart'
+            }))
+          : [];
+        
+        const costcoFiltered = costcoData?.labels && costcoData?.counts && costcoData?.percent
+          ? costcoData.labels.map((aspect, index) => ({
+              aspect: aspect === 'others' ? 'Others' : aspect.charAt(0).toUpperCase() + aspect.slice(1),
+              count: costcoData.counts[sentiment.toLowerCase()]?.[index] || 0,
+              percentage: costcoData.percent[sentiment.toLowerCase()]?.[index] || 0,
+              sentiment: sentiment.toLowerCase(),
+              brand: 'Costco'
+            }))
+          : [];
+        
+        setAspectSplitModal({
+          isOpen: true,
+          sentiment: sentiment,
+          data: { walmart: walmartFiltered, costco: costcoFiltered },
+          showByBrand: true
+        });
+      } else {
+        // Show single brand
+        const data = selectedBrand === "costco" ? costcoData : walmartData;
+        let filteredData = [];
+        
+        if (data?.labels && data?.counts && data?.percent) {
+          const labels = data.labels;
+          const counts = data.counts[sentiment.toLowerCase()] || [];
+          const percentages = data.percent[sentiment.toLowerCase()] || [];
+          
+          filteredData = labels.map((aspect, index) => ({
+            aspect: aspect === 'others' ? 'Others' : aspect.charAt(0).toUpperCase() + aspect.slice(1),
+            count: counts[index] || 0,
+            percentage: percentages[index] || 0,
+            sentiment: sentiment.toLowerCase()
+          }));
+        }
+        
+        setAspectSplitModal({
+          isOpen: true,
+          sentiment: sentiment,
+          data: filteredData,
+          showByBrand: false
+        });
+      }
     } catch (error) {
       console.error("Failed to load aspect split:", error);
       setErr("Failed to load aspect breakdown");
@@ -360,8 +419,6 @@ export default function Dashboard() {
   };
 
   const trendLineData = useMemo(() => {
-    if (!trend || trend.length === 0) return { labels: [], datasets: [] };
-
     // Aggregate data based on time period
     const aggregateData = (data, period) => {
       const grouped = {};
@@ -411,30 +468,119 @@ export default function Dashboard() {
       })).sort((a, b) => new Date(a.date) - new Date(b.date));
     };
 
-    // Get aggregated data
-    const aggregatedTrend = timePeriod === "daily" ? trend : aggregateData(trend, timePeriod);
+    const datasets = [];
+    let labels = [];
+    let originalData = [];
 
-    // Format labels based on time period
-    const labels = aggregatedTrend.map((r) => formatDate(r.date));
-    const pos = aggregatedTrend.map((r) => r.positive ?? 0);
-    const neu = aggregatedTrend.map((r) => r.neutral ?? 0);
-    const neg = aggregatedTrend.map((r) => r.negative ?? 0);
+    // Aggregate both datasets
+    const aggregatedTrend = (trend && trend.length > 0) 
+      ? (timePeriod === "daily" ? trend : aggregateData(trend, timePeriod))
+      : [];
+    const aggregatedCompetitorTrend = (competitorTrend && competitorTrend.length > 0)
+      ? (timePeriod === "daily" ? competitorTrend : aggregateData(competitorTrend, timePeriod))
+      : [];
+
+    // Create unified date set if showing "all"
+    let allDates = [];
+    if (selectedBrand === "all") {
+      const walmartDates = aggregatedTrend.map(r => r.date);
+      const costcoDates = aggregatedCompetitorTrend.map(r => r.date);
+      allDates = Array.from(new Set([...walmartDates, ...costcoDates])).sort((a, b) => new Date(a) - new Date(b));
+      labels = allDates.map(d => formatDate(d));
+    } else if (selectedBrand === "walmart" && aggregatedTrend.length > 0) {
+      labels = aggregatedTrend.map((r) => formatDate(r.date));
+      originalData = aggregatedTrend;
+    } else if (selectedBrand === "costco" && aggregatedCompetitorTrend.length > 0) {
+      labels = aggregatedCompetitorTrend.map((r) => formatDate(r.date));
+      originalData = aggregatedCompetitorTrend;
+    }
+
+    // Helper to map data to labels
+    const mapToLabels = (dataArray, dateArray) => {
+      return labels.map(label => {
+        // Find the date that matches this label
+        const matchingDate = (selectedBrand === "all" ? allDates : dateArray).find(d => formatDate(d) === label);
+        if (!matchingDate) return 0;
+        const item = dataArray.find(r => r.date === matchingDate);
+        return item || null;
+      });
+    };
+
+    // Process Walmart data
+    if (selectedBrand === "walmart" || selectedBrand === "all") {
+      if (aggregatedTrend.length > 0) {
+        const walmartItems = mapToLabels(aggregatedTrend, aggregatedTrend.map(r => r.date));
+        const pos = walmartItems.map(item => item?.positive ?? 0);
+        const neu = walmartItems.map(item => item?.neutral ?? 0);
+        const neg = walmartItems.map(item => item?.negative ?? 0);
+        
+        datasets.push(
+          { label: "Walmart % Positive", data: pos, borderColor: "#22c55e", fill: false, borderDash: [] },
+          { label: "Walmart % Neutral", data: neu, borderColor: "#facc15", fill: false, borderDash: [] },
+          { label: "Walmart % Negative", data: neg, borderColor: "#ef4444", fill: false, borderDash: [] }
+        );
+      }
+    }
+
+    // Process Costco data
+    if (selectedBrand === "costco" || selectedBrand === "all") {
+      if (aggregatedCompetitorTrend.length > 0) {
+        const costcoItems = mapToLabels(aggregatedCompetitorTrend, aggregatedCompetitorTrend.map(r => r.date));
+        const competitorPos = costcoItems.map(item => item?.positive ?? 0);
+        const competitorNeu = costcoItems.map(item => item?.neutral ?? 0);
+        const competitorNeg = costcoItems.map(item => item?.negative ?? 0);
+        
+        datasets.push(
+          { label: "Costco % Positive", data: competitorPos, borderColor: "#22c55e", fill: false, borderDash: [5, 5] },
+          { label: "Costco % Neutral", data: competitorNeu, borderColor: "#fbbf24", fill: false, borderDash: [5, 5] },
+          { label: "Costco % Negative", data: competitorNeg, borderColor: "#f87171", fill: false, borderDash: [5, 5] }
+        );
+      }
+    }
+
+    // If no data, return empty
+    if (datasets.length === 0) {
+      return { labels: [], datasets: [], originalData: [] };
+    }
+
+    // Fill missing data points with 0 for datasets that don't have data for all labels
+    datasets.forEach(dataset => {
+      while (dataset.data.length < labels.length) {
+        dataset.data.push(0);
+      }
+    });
     
     return {
       labels,
-      datasets: [
-        { label: "% Positive", data: pos, borderColor: "#22c55e", fill: false },
-        { label: "% Neutral", data: neu, borderColor: "#facc15", fill: false },
-        { label: "% Negative", data: neg, borderColor: "#ef4444", fill: false },
-      ],
-      // Store original data for tooltip access
-      originalData: aggregatedTrend
+      datasets,
+      originalData: originalData.length > 0 ? originalData : []
     };
-  }, [trend, timePeriod]);
+  }, [trend, competitorTrend, timePeriod, selectedBrand]);
 
-  const total = summary?.total || 0;
-  const pct = summary?.percent || { positive: 0, negative: 0, neutral: 0 };
-  const counts = summary?.counts || { positive: 0, negative: 0, neutral: 0 };
+  // Determine which summary to use based on selected brand
+  const activeSummary = selectedBrand === "costco" ? competitorSummary : summary;
+  const total = activeSummary?.total || 0;
+  const pct = activeSummary?.percent || { positive: 0, negative: 0, neutral: 0 };
+  const counts = activeSummary?.counts || { positive: 0, negative: 0, neutral: 0 };
+  
+  // For "all", combine both summaries
+  const combinedTotal = selectedBrand === "all" 
+    ? (summary?.total || 0) + (competitorSummary?.total || 0)
+    : total;
+  const combinedCounts = selectedBrand === "all" ? {
+    positive: (summary?.counts?.positive || 0) + (competitorSummary?.counts?.positive || 0),
+    neutral: (summary?.counts?.neutral || 0) + (competitorSummary?.counts?.neutral || 0),
+    negative: (summary?.counts?.negative || 0) + (competitorSummary?.counts?.negative || 0),
+  } : counts;
+  const combinedPct = selectedBrand === "all" && combinedTotal > 0 ? {
+    positive: parseFloat((combinedCounts.positive / combinedTotal * 100).toFixed(2)),
+    neutral: parseFloat((combinedCounts.neutral / combinedTotal * 100).toFixed(2)),
+    negative: parseFloat((combinedCounts.negative / combinedTotal * 100).toFixed(2)),
+  } : pct;
+  
+  const displayTotal = selectedBrand === "all" ? combinedTotal : total;
+  const displayCounts = selectedBrand === "all" ? combinedCounts : counts;
+  const displayPct = selectedBrand === "all" ? combinedPct : pct;
 
   return (
     <div className="h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 overflow-hidden">
@@ -479,7 +625,20 @@ export default function Dashboard() {
                     <p className="text-slate-400 text-sm">Real-time sentiment analysis</p>
                   </div>
                 </div>
-                <div className="flex items-center">
+                <div className="flex items-center space-x-2">
+                  {/* Brand Selector */}
+                  <div className="flex items-center space-x-1 bg-slate-700/30 backdrop-blur-sm rounded-md border border-slate-600/50 px-2 py-2">
+                    <span className="text-xs text-slate-200 font-medium">Brand:</span>
+                    <select
+                      value={selectedBrand}
+                      onChange={(e) => setSelectedBrand(e.target.value)}
+                      className="px-2 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                    >
+                      <option value="walmart">Walmart</option>
+                      <option value="costco">Costco</option>
+                      <option value="all">All</option>
+                    </select>
+                  </div>
                   {/* Date Range Controls */}
                   <div className="flex items-center space-x-1 bg-slate-700/30 backdrop-blur-sm rounded-md border border-slate-600/50 px-3 py-2">
                     <div className="w-1 h-1 bg-gradient-to-r from-emerald-400 to-cyan-400 rounded-full"></div>
@@ -520,7 +679,7 @@ export default function Dashboard() {
                     </div>
                     <div className="text-right">
                       <p className="text-xs font-medium text-slate-400 mb-0">Total Tweets</p>
-                      <p className="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors duration-300">{total.toLocaleString()}</p>
+                      <p className="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors duration-300">{displayTotal.toLocaleString()}</p>
                     </div>
                   </div>
                 </div>
@@ -537,13 +696,13 @@ export default function Dashboard() {
                 </div>
                       <div className="text-right">
                         <p className="text-xs font-medium text-slate-400 mb-0">Positive</p>
-                        <p className="text-xs font-bold text-white group-hover:text-green-400 transition-colors duration-300">{counts.positive ?? 0} ({pct.positive ?? 0}%)</p>
+                        <p className="text-xs font-bold text-white group-hover:text-green-400 transition-colors duration-300">{displayCounts.positive ?? 0} ({displayPct.positive ?? 0}%)</p>
               </div>
             </div>
                     <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
                       <div
                         className="bg-gradient-to-r from-green-500 to-emerald-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${pct.positive ?? 0}%` }}
+                        style={{ width: `${displayPct.positive ?? 0}%` }}
                       ></div>
                     </div>
               <div className="flex items-center justify-between">
@@ -572,13 +731,13 @@ export default function Dashboard() {
                 </div>
                       <div className="text-right">
                         <p className="text-xs font-medium text-slate-400 mb-0">Neutral</p>
-                        <p className="text-xs font-bold text-white group-hover:text-yellow-400 transition-colors duration-300">{counts.neutral ?? 0} ({pct.neutral ?? 0}%)</p>
+                        <p className="text-xs font-bold text-white group-hover:text-yellow-400 transition-colors duration-300">{displayCounts.neutral ?? 0} ({displayPct.neutral ?? 0}%)</p>
               </div>
             </div>
                     <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
                       <div
                         className="bg-gradient-to-r from-yellow-500 to-amber-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${pct.neutral ?? 0}%` }}
+                        style={{ width: `${displayPct.neutral ?? 0}%` }}
                       ></div>
                     </div>
               <div className="flex items-center justify-between">
@@ -607,13 +766,13 @@ export default function Dashboard() {
                       </div>
                       <div className="text-right">
                         <p className="text-xs font-medium text-slate-400 mb-0">Negative</p>
-                        <p className="text-xs font-bold text-white group-hover:text-red-400 transition-colors duration-300">{counts.negative ?? 0} ({pct.negative ?? 0}%)</p>
+                        <p className="text-xs font-bold text-white group-hover:text-red-400 transition-colors duration-300">{displayCounts.negative ?? 0} ({displayPct.negative ?? 0}%)</p>
                       </div>
                     </div>
                     <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
                       <div
                         className="bg-gradient-to-r from-red-500 to-pink-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${pct.negative ?? 0}%` }}
+                        style={{ width: `${displayPct.negative ?? 0}%` }}
                       ></div>
                     </div>
                     <div className="flex items-center justify-between">
@@ -653,7 +812,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                       <button
-                        onClick={() => setAspectSplitModal({ isOpen: false, sentiment: null, data: null })}
+                        onClick={() => setAspectSplitModal({ isOpen: false, sentiment: null, data: null, showByBrand: false })}
                         className="text-slate-400 hover:text-white transition-colors"
                       >
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -663,7 +822,101 @@ export default function Dashboard() {
                     </div>
                     
                     <div className="flex-1 overflow-y-auto">
-                      {aspectSplitModal.data && aspectSplitModal.data.length > 0 ? (
+                      {aspectSplitModal.showByBrand ? (
+                        // Show breakdown by brand when "All" is selected
+                        <div className="space-y-6">
+                          {/* Walmart Section */}
+                          {aspectSplitModal.data.walmart && aspectSplitModal.data.walmart.length > 0 && (
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-2 mb-3">
+                                <div className="w-2 h-2 bg-emerald-400 rounded-full"></div>
+                                <h3 className="text-sm font-bold text-white">Walmart</h3>
+                              </div>
+                              {aspectSplitModal.data.walmart.map((aspect, index) => {
+                                const totalSentimentTweets = aspectSplitModal.data.walmart.reduce((sum, a) => sum + (a.count || 0), 0);
+                                const aspectCount = aspect.count || 0;
+                                const percentageOfTotal = totalSentimentTweets > 0 ? (aspectCount / totalSentimentTweets) * 100 : 0;
+                                
+                                return (
+                                  <div key={`walmart-${index}`} className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="font-medium text-white text-sm">{aspect.aspect || `Aspect ${index + 1}`}</h4>
+                                      <div className="flex items-center space-x-2">
+                                        <span className="text-xs text-slate-400">{aspectCount} tweets</span>
+                                        <span className="text-sm font-bold text-white">{percentageOfTotal.toFixed(1)}%</span>
+                                      </div>
+                                    </div>
+                                    <div className="w-full bg-slate-600/50 rounded-full h-3 overflow-hidden">
+                                      <div
+                                        className={`h-3 rounded-full transition-all duration-500 ${
+                                          aspectSplitModal.sentiment === 'positive' 
+                                            ? 'bg-gradient-to-r from-green-500 to-emerald-500' 
+                                            : aspectSplitModal.sentiment === 'negative'
+                                            ? 'bg-gradient-to-r from-red-500 to-pink-500'
+                                            : 'bg-gradient-to-r from-yellow-500 to-amber-500'
+                                        }`}
+                                        style={{ 
+                                          width: `${Math.min(percentageOfTotal, 100)}%`,
+                                          maxWidth: '100%'
+                                        }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              <div className="text-xs text-slate-400 pt-2 border-t border-slate-600/50">
+                                Total: {aspectSplitModal.data.walmart.reduce((sum, a) => sum + (a.count || 0), 0)} tweets
+                              </div>
+                            </div>
+                          )}
+                          
+                          {/* Costco Section */}
+                          {aspectSplitModal.data.costco && aspectSplitModal.data.costco.length > 0 && (
+                            <div className="space-y-3">
+                              <div className="flex items-center space-x-2 mb-3">
+                                <div className="w-2 h-2 bg-blue-400 rounded-full"></div>
+                                <h3 className="text-sm font-bold text-white">Costco</h3>
+                              </div>
+                              {aspectSplitModal.data.costco.map((aspect, index) => {
+                                const totalSentimentTweets = aspectSplitModal.data.costco.reduce((sum, a) => sum + (a.count || 0), 0);
+                                const aspectCount = aspect.count || 0;
+                                const percentageOfTotal = totalSentimentTweets > 0 ? (aspectCount / totalSentimentTweets) * 100 : 0;
+                                
+                                return (
+                                  <div key={`costco-${index}`} className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="font-medium text-white text-sm">{aspect.aspect || `Aspect ${index + 1}`}</h4>
+                                      <div className="flex items-center space-x-2">
+                                        <span className="text-xs text-slate-400">{aspectCount} tweets</span>
+                                        <span className="text-sm font-bold text-white">{percentageOfTotal.toFixed(1)}%</span>
+                                      </div>
+                                    </div>
+                                    <div className="w-full bg-slate-600/50 rounded-full h-3 overflow-hidden">
+                                      <div
+                                        className={`h-3 rounded-full transition-all duration-500 ${
+                                          aspectSplitModal.sentiment === 'positive' 
+                                            ? 'bg-gradient-to-r from-green-500 to-emerald-500' 
+                                            : aspectSplitModal.sentiment === 'negative'
+                                            ? 'bg-gradient-to-r from-red-500 to-pink-500'
+                                            : 'bg-gradient-to-r from-yellow-500 to-amber-500'
+                                        }`}
+                                        style={{ 
+                                          width: `${Math.min(percentageOfTotal, 100)}%`,
+                                          maxWidth: '100%'
+                                        }}
+                                      ></div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              <div className="text-xs text-slate-400 pt-2 border-t border-slate-600/50">
+                                Total: {aspectSplitModal.data.costco.reduce((sum, a) => sum + (a.count || 0), 0)} tweets
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ) : aspectSplitModal.data && Array.isArray(aspectSplitModal.data) && aspectSplitModal.data.length > 0 ? (
+                        // Show single brand breakdown
                         <div className="space-y-3">
                           {aspectSplitModal.data.map((aspect, index) => {
                             // Calculate percentage of total sentiment tweets
@@ -678,8 +931,8 @@ export default function Dashboard() {
                                   <div className="flex items-center space-x-2">
                                     <span className="text-xs text-slate-400">{aspectCount} tweets</span>
                                     <span className="text-sm font-bold text-white">{percentageOfTotal.toFixed(1)}%</span>
-            </div>
-          </div>
+                                  </div>
+                                </div>
 
                                 {/* Progress Bar */}
                                 <div className="w-full bg-slate-600/50 rounded-full h-3 overflow-hidden">
@@ -715,7 +968,7 @@ export default function Dashboard() {
                     </div>
                     
                     {/* Summary */}
-                    {aspectSplitModal.data && aspectSplitModal.data.length > 0 && (
+                    {aspectSplitModal.data && !aspectSplitModal.showByBrand && Array.isArray(aspectSplitModal.data) && aspectSplitModal.data.length > 0 && (
                       <div className="mt-4 pt-3 border-t border-slate-600/50 flex-shrink-0">
                         <div className="flex items-center justify-between text-xs text-slate-400">
                           <span>Total {aspectSplitModal.sentiment} tweets analyzed</span>

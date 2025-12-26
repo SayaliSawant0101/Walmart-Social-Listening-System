@@ -66,16 +66,6 @@ export default function Navigation() {
                 <p className="text-slate-400">Advanced Analytics Platform</p>
               </div>
             </div>
-            
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center space-x-2 bg-slate-700/50 px-3 py-2 rounded-xl">
-                <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
-                <span className="text-sm text-slate-300 font-medium">Live Data</span>
-              </div>
-              <div className="text-sm text-slate-400 bg-slate-700/30 px-3 py-2 rounded-xl">
-                API Connected
-              </div>
-            </div>
           </div>
         </div>
       </nav>

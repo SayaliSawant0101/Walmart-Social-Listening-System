@@ -44,15 +44,28 @@ export default function ThemePanel() {
         console.error('Failed to generate Walmart themes:', walmartPayload.reason);
         const e = walmartPayload.reason;
         let errorMessage = 'Failed to generate Walmart themes';
-        if (e.response?.data) {
-          const errorData = e.response.data;
-          errorMessage = errorData.error || errorData.message || errorMessage;
+        
+        // Check if we have a response from the server (even if it's an error)
+        if (e.response) {
+          const errorData = e.response.data || {};
+          errorMessage = errorData.error || errorData.message || `Server returned ${e.response.status}`;
           if (errorData.hint) {
             errorMessage += `\n\n${errorData.hint}`;
           }
+          if (errorData.file_path) {
+            errorMessage += `\n\nFile path: ${errorData.file_path}`;
+          }
+        } else if (e.request) {
+          // Request was made but no response received
+          errorMessage = 'Network Error';
+          if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
+            errorMessage += '\n\nThe request timed out. This may take several minutes. Please try again.';
+          } else {
+            errorMessage += '\n\nCannot connect to the server. Please check if the backend is running.';
+          }
         } else if (e.message) {
           errorMessage = e.message;
-          if (e.message.includes('timeout')) {
+          if (e.message.includes('timeout') || e.code === 'ECONNABORTED') {
             errorMessage += '\n\nThe request took too long. Try reducing the date range or number of themes.';
           } else if (e.message.includes('Network Error') || e.message.includes('ECONNREFUSED')) {
             errorMessage += '\n\nCannot connect to the server. Please check if the backend is running.';
@@ -69,15 +82,31 @@ export default function ThemePanel() {
         console.error('Failed to generate Costco themes:', costcoPayload.reason);
         const e = costcoPayload.reason;
         let errorMessage = 'Failed to generate Costco themes';
-        if (e.response?.data) {
-          const errorData = e.response.data;
-          errorMessage = errorData.error || errorData.message || errorMessage;
+        
+        // Check if we have a response from the server (even if it's an error)
+        if (e.response) {
+          const errorData = e.response.data || {};
+          errorMessage = errorData.error || errorData.message || `Server returned ${e.response.status}`;
           if (errorData.hint) {
             errorMessage += `\n\n${errorData.hint}`;
           }
+          if (errorData.file_path) {
+            errorMessage += `\n\nFile path: ${errorData.file_path}`;
+          }
+          if (errorData.file_paths) {
+            errorMessage += `\n\nChecked paths:\n- Raw: ${errorData.file_paths.raw}\n- Sentiment: ${errorData.file_paths.sentiment}`;
+          }
+        } else if (e.request) {
+          // Request was made but no response received
+          errorMessage = 'Network Error';
+          if (e.code === 'ECONNABORTED' || e.message?.includes('timeout')) {
+            errorMessage += '\n\nThe request timed out. This may take several minutes. Please try again.';
+          } else {
+            errorMessage += '\n\nCannot connect to the server. Please check if the backend is running.';
+          }
         } else if (e.message) {
           errorMessage = e.message;
-          if (e.message.includes('timeout')) {
+          if (e.message.includes('timeout') || e.code === 'ECONNABORTED') {
             errorMessage += '\n\nThe request took too long. Try reducing the date range or number of themes.';
           } else if (e.message.includes('Network Error') || e.message.includes('ECONNREFUSED')) {
             errorMessage += '\n\nCannot connect to the server. Please check if the backend is running.';
@@ -181,9 +210,34 @@ export default function ThemePanel() {
           {data && data.themes && data.themes.length > 0 ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-slate-400">
-                  {data.themes.length} theme{data.themes.length !== 1 ? 's' : ''} generated
-                </p>
+                <div className="flex items-center space-x-3">
+                  <p className="text-sm text-slate-400">
+                    {data.themes.length} theme{data.themes.length !== 1 ? 's' : ''} generated
+                  </p>
+                  {data.used_llm !== undefined && (
+                    <div className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-xs ${
+                      data.used_llm 
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                        : 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+                    }`}>
+                      {data.used_llm ? (
+                        <>
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>AI Generated</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          <span>Fallback Mode</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500">
                   {new Date(data.updated_at).toLocaleString()}
                 </p>
@@ -284,9 +338,34 @@ export default function ThemePanel() {
           {dataCostco && dataCostco.themes && dataCostco.themes.length > 0 ? (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-slate-400">
-                  {dataCostco.themes.length} theme{dataCostco.themes.length !== 1 ? 's' : ''} generated
-                </p>
+                <div className="flex items-center space-x-3">
+                  <p className="text-sm text-slate-400">
+                    {dataCostco.themes.length} theme{dataCostco.themes.length !== 1 ? 's' : ''} generated
+                  </p>
+                  {dataCostco.used_llm !== undefined && (
+                    <div className={`flex items-center space-x-1 px-2 py-1 rounded-lg text-xs ${
+                      dataCostco.used_llm 
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                        : 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+                    }`}>
+                      {dataCostco.used_llm ? (
+                        <>
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span>AI Generated</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          <span>Fallback Mode</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <p className="text-xs text-slate-500">
                   {new Date(dataCostco.updated_at).toLocaleString()}
                 </p>

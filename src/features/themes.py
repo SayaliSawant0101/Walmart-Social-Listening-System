@@ -1,13 +1,23 @@
 # src/features/themes.py 
 from __future__ import annotations
-import os, json, re, traceback, time
+import os, json, re, traceback, time, sys
 from typing import Dict, List, Optional
 import pandas as pd
+
+# Fix Windows console encoding for Unicode characters
+if sys.platform == "win32":
+    import io
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        # If stdout/stderr don't have a buffer, skip the fix
+        pass
 
 FORCE_TFIDF = os.getenv("THEMES_EMB_BACKEND", "").lower() == "tfidf"
 
 _STOP = {
-    "walmart","rt","amp","https","http","co","www","com","org","net",
+    "walmart","costco","rt","amp","https","http","co","www","com","org","net",
     "user","users","you","your","yours","u","ur","me","we","us","they","them",
     "im","ive","dont","didnt","cant","couldnt","wont","wouldnt","shouldnt",
     "like","just","get","got","one","two","three","also","still","even",
@@ -17,7 +27,14 @@ _STOP = {
     "store","stores","shop","shopping","customer","customers","people",
     "good","bad","great","best","worst","better","worse",
     "buy","bought","purchase","purchased","sale","sales",
-    "app","apps","site","website","httpst","httpsco","tco"
+    "app","apps","site","website","httpst","httpsco","tco",
+    "the","and","for","are","but","not","this","that","with","from","have",
+    "has","had","was","were","been","being","will","would","could","should",
+    "may","might","must","can","cannot","don","does","did","do","doesnt",
+    "isnt","wasnt","werent","havent","hasnt","hadnt","wont","wouldnt","couldnt",
+    "shouldnt","is","am","are","was","were","be","been","being","a","an","as",
+    "at","by","in","on","to","of","it","its","or","if","so","than","then","there",
+    "their","they","these","those","what","when","where","which","who","why"
 }
 _URL_MENTION_HASHTAG = re.compile(r"https?://\S+|[@#]\w+")
 _NON_ALNUM = re.compile(r"[^a-z0-9\s']")
@@ -333,9 +350,17 @@ def compute_themes_payload(
             # Already a numpy array
             scores = np.asarray(mean_result).flatten()
         feats = vec.get_feature_names_out()
-        top_idx = scores.argsort()[::-1][:6]
-        toks = [f for f in feats[top_idx] if f.split()[0] not in _STOP]
-        tfidf_kws[int(tid)] = toks[:6]
+        top_idx = scores.argsort()[::-1][:15]  # Get more candidates
+        # Filter out stop words and very short terms
+        toks = []
+        for f in feats[top_idx]:
+            # Check if any word in the feature is a stop word
+            words = f.split()
+            if words and words[0] not in _STOP and len(words[0]) > 2:
+                # For multi-word phrases, check all words
+                if all(w not in _STOP and len(w) > 2 for w in words):
+                    toks.append(f)
+        tfidf_kws[int(tid)] = toks[:8]  # Return top 8 meaningful keywords
 
     # ---------- Sentiment counts ----------
     pos_counts, neg_counts, neu_counts = {}, {}, {}
@@ -354,68 +379,121 @@ def compute_themes_payload(
     # ---------- Name & summarize with OpenAI if key provided ----------
     client = None
     if openai_api_key:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_api_key.strip())
-        except Exception as e:
-            print("[OpenAI client init error]", e)
-            client = None
+        openai_api_key = openai_api_key.strip()
+        if openai_api_key and len(openai_api_key) > 10:  # Basic validation
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=openai_api_key)
+                print(f"[Themes] ✅ OpenAI client initialized successfully (key length: {len(openai_api_key)})")
+            except Exception as e:
+                print(f"[Themes] ❌ OpenAI client init error: {e}")
+                client = None
+        else:
+            print(f"[Themes] ⚠️  OpenAI API key provided but appears invalid (length: {len(openai_api_key) if openai_api_key else 0})")
+    else:
+        print("[Themes] ⚠️  No OpenAI API key provided. Using fallback mode for theme names and summaries.")
 
     theme_names: Dict[int, str] = {}
     summaries: Dict[int, str] = {}
+    ai_used_for_any_theme = False  # Track if AI was actually used for any theme
 
-    TITLE_SYSTEM = "You name customer feedback themes for Walmart Twitter data."
+    TITLE_SYSTEM = "You are an expert at analyzing customer feedback and creating concise, meaningful theme names for retail customer feedback. Generate professional, specific theme names that accurately represent what customers are discussing. The theme name should be descriptive and capture the main topic or concern."
     TITLE_USER_TMPL = (
-        "Name this theme in 3–6 words. Be specific and professional; no filler. "
-        "Avoid generic tokens like user, http, rt, amp, you, me, we. "
-        "Keywords (cleaned): {kws}\n"
-        "Return ONLY the title."
+        "Based on the following keywords extracted from customer tweets, generate a concise and meaningful theme name (2-5 words) that captures what customers are discussing. "
+        "The theme name should be:\n"
+        "- Specific and descriptive (e.g., 'Product Availability Issues', 'Delivery Experience', 'Customer Service Quality')\n"
+        "- Professional and clear\n"
+        "- Avoid generic words, brand names, or common stop words\n"
+        "- Focus on the actual topic or concern being discussed\n\n"
+        "Keywords from customer tweets: {kws}\n\n"
+        "Return ONLY the theme name, nothing else. Do not include quotes, colons, or additional text."
     )
 
     SUMMARY_SYSTEM = (
-        "You are a retail insights analyst. Write 3-4 lines describing the theme for a Walmart stakeholder. "
-        "Focus on what customers are discussing, not sentiment counts or action items. Be descriptive and informative."
+        "You are a retail insights analyst specializing in customer feedback analysis. Write clear, informative summaries that describe what customers are discussing in each theme. "
+        "Your summaries should be 2-3 sentences that provide specific context and insight into the customer conversations. Be descriptive and focus on what customers are actually talking about."
     )
     SUMMARY_USER_TMPL = (
-        "Theme name: {title}\n"
-        "Top keywords: {kws}\n"
-        "Examples (up to 2): {examples}\n"
-        "Output: 3-4 lines describing what customers are discussing in this theme. Do not mention sentiment counts or suggest actions."
+        "Theme name: {title}\n\n"
+        "Top keywords from customer tweets: {kws}\n\n"
+        "Sample customer tweets from this theme:\n{examples}\n\n"
+        "Write a 2-3 sentence summary that describes what customers are discussing in this theme. "
+        "Be specific about the topics, concerns, or experiences customers are sharing. "
+        "Describe the actual content of the conversations, not generic statements. "
+        "Do not mention sentiment counts, percentages, or suggest actions. "
+        "Focus on what customers are actually saying based on the keywords and sample tweets provided."
     )
 
     for tid in sorted(df["theme"].unique().astype(int)):
         sub = df[df["theme"] == tid]
-        kws_prompt = tfidf_kws.get(tid) or _top_keywords(sub[text_col].tolist(), 6)
-        fallback_title = ", ".join([k for k in kws_prompt if k not in _STOP][:3]) or f"Theme {tid}"
+        kws_prompt = tfidf_kws.get(tid) or _top_keywords(sub[text_col].tolist(), 10)
+        # Filter out stop words and very short keywords
+        meaningful_kws = [k for k in kws_prompt if k not in _STOP and len(k) > 2]
+        # Use top 5 meaningful keywords for better context
+        kws_prompt = meaningful_kws[:5] if meaningful_kws else kws_prompt[:3]
+        # Create a better fallback title from meaningful keywords
+        if meaningful_kws:
+            # Capitalize first letter of each keyword and join
+            fallback_title = " ".join([kw.capitalize() for kw in meaningful_kws[:3]])
+        else:
+            # If no meaningful keywords, try to extract from actual tweet text
+            sample_texts = sub[text_col].astype(str).head(5).tolist()
+            # Extract meaningful words from sample texts
+            all_words = []
+            for text in sample_texts:
+                words = _normalize(text).split()
+                meaningful = [w for w in words if w not in _STOP and len(w) > 3]
+                all_words.extend(meaningful[:3])
+            from collections import Counter
+            if all_words:
+                top_words = [w.capitalize() for w, _ in Counter(all_words).most_common(2)]
+                fallback_title = " ".join(top_words) if top_words else f"Theme {tid}"
+            else:
+                fallback_title = f"Theme {tid}"
 
         title = fallback_title
-        if client:
-            # Retry logic for OpenAI API calls
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    resp = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role":"system","content":TITLE_SYSTEM},
-                            {"role":"user","content":TITLE_USER_TMPL.format(kws=kws_prompt)}
-                        ],
-                        temperature=0.2,
-                        max_tokens=24,
-                        timeout=15  # Increased timeout
-                    )
-                    t = (resp.choices[0].message.content or "").strip().strip('"')
-                    if t:
-                        title = t
-                    break  # Success, exit retry loop
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 1  # Exponential backoff: 1s, 2s
-                        print(f"[OpenAI title error for theme {tid}, attempt {attempt + 1}/{max_retries}]: {str(e)}. Retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"[OpenAI title error for theme {tid} after {max_retries} attempts]: {str(e)}. Using fallback title.")
-                        # Use fallback title
+        if client and kws_prompt:
+            # Only call AI if we have meaningful keywords
+            if not meaningful_kws or len(meaningful_kws) < 2:
+                print(f"[Theme {tid}] Skipping AI - insufficient meaningful keywords (have {len(meaningful_kws) if meaningful_kws else 0}, need 2+)")
+                print(f"[Theme {tid}] Keywords: {kws_prompt[:5]}")
+            else:
+                # Retry logic for OpenAI API calls
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        keywords_str = ", ".join(meaningful_kws[:8])
+                        print(f"[Theme {tid}] Calling OpenAI for title with keywords: {keywords_str[:100]}...")
+                        resp = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role":"system","content":TITLE_SYSTEM},
+                                {"role":"user","content":TITLE_USER_TMPL.format(kws=keywords_str)}
+                            ],
+                            temperature=0.3,
+                            max_tokens=40,
+                            timeout=25
+                        )
+                        t = (resp.choices[0].message.content or "").strip().strip('"').strip("'").strip(".")
+                        # Remove common prefixes/suffixes that AI might add
+                        t = t.replace("Theme:", "").replace("Title:", "").strip()
+                        if t and len(t) > 3 and len(t) < 60:  # Ensure we got a meaningful title
+                            title = t
+                            ai_used_for_any_theme = True  # Mark that AI was successfully used
+                            # Safely print Unicode title
+                            safe_title = title.encode('ascii', 'replace').decode('ascii')
+                            print(f"[Theme {tid}] AI generated title: {safe_title}")
+                            break  # Success, exit retry loop
+                        elif attempt == max_retries - 1:
+                            print(f"[Theme {tid}] Generated title invalid (len={len(t) if t else 0}), using fallback: {fallback_title}")
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            wait_time = (attempt + 1) * 1.5
+                            print(f"[Theme {tid}] OpenAI error (attempt {attempt + 1}/{max_retries}): {str(e)[:100]}. Retrying in {wait_time}s...")
+                            time.sleep(wait_time)
+                        else:
+                            print(f"[Theme {tid}] OpenAI failed after {max_retries} attempts: {str(e)[:100]}. Using fallback: {fallback_title}")
+                            # Use fallback title
 
         theme_names[tid] = title
 
@@ -423,48 +501,74 @@ def compute_themes_payload(
         n = neg_counts.get(tid, 0)
         neu = neu_counts.get(tid, 0)
 
-        base_summary = (
-            f"{title}: This theme focuses on {', '.join(kws_prompt[:4])}. "
-            f"Customers are discussing various aspects related to this topic. "
-            f"The discussions cover different perspectives and experiences. "
-            f"This represents an important area of customer feedback and engagement."
-        )
+        # Create a better fallback summary using actual tweet content
+        sample_tweets = sub[text_col].astype(str).head(3).tolist()
+        if sample_tweets and meaningful_kws:
+            # Create a more descriptive fallback summary
+            kw_str = ", ".join(meaningful_kws[:4])
+            base_summary = (
+                f"Customers are discussing topics related to {kw_str}. "
+                f"This theme captures conversations about these key areas based on customer feedback and social media discussions."
+            )
+        else:
+            base_summary = (
+                f"This theme represents a collection of customer discussions and feedback. "
+                f"Analysis of the tweets in this theme reveals patterns in customer conversations and experiences."
+            )
 
-        if client:
-            ex = [str(x) for x in sub[text_col].astype(str).head(2).tolist()]  # Reduced examples
+        if client and meaningful_kws and len(meaningful_kws) >= 2:
+            ex = [str(x) for x in sub[text_col].astype(str).head(3).tolist()]  # Get 3 examples for better context
+            examples_text = "\n".join([f"- {e[:200]}" for e in ex if e and len(e.strip()) > 10])  # Limit each example to 200 chars, filter empty
+            if not examples_text:
+                examples_text = "Sample tweets from this theme are available."
+            
+            keywords_str = ", ".join(meaningful_kws[:8])
             # Retry logic for OpenAI API calls
-            max_retries = 2
+            max_retries = 3
             for attempt in range(max_retries):
                 try:
+                    print(f"[Theme {tid}] Calling OpenAI for summary...")
                     resp = client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=[
                             {"role":"system","content":SUMMARY_SYSTEM},
                             {"role":"user","content":SUMMARY_USER_TMPL.format(
-                                title=title, kws=kws_prompt, examples=ex
+                                title=title, kws=keywords_str, examples=examples_text
                             )}
                         ],
-                        temperature=0.3,
-                        max_tokens=120,  # Increased for 3-4 lines
-                        timeout=15  # Increased timeout
+                        temperature=0.4,
+                        max_tokens=180,  # Increased for better summaries
+                        timeout=25
                     )
                     s = (resp.choices[0].message.content or "").strip()
-                    summaries[tid] = s or base_summary
-                    break  # Success, exit retry loop
+                    # Remove common boilerplate phrases
+                    s = s.replace("This theme focuses on", "").replace("Customers are discussing", "").strip()
+                    if s and len(s) > 30:  # Ensure we got a meaningful summary
+                        summaries[tid] = s
+                        ai_used_for_any_theme = True  # Mark that AI was successfully used
+                        print(f"[Theme {tid}] AI generated summary (len={len(s)})")
+                        break  # Success, exit retry loop
+                    elif attempt == max_retries - 1:
+                        print(f"[Theme {tid}] Generated summary too short (len={len(s) if s else 0}), using fallback.")
+                        summaries[tid] = base_summary
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 1  # Exponential backoff: 1s, 2s
-                        print(f"[OpenAI summary error for theme {tid}, attempt {attempt + 1}/{max_retries}]: {str(e)}. Retrying in {wait_time}s...")
+                        wait_time = (attempt + 1) * 1.5
+                        print(f"[Theme {tid}] OpenAI summary error (attempt {attempt + 1}/{max_retries}): {str(e)[:100]}. Retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:
-                        print(f"[OpenAI summary error for theme {tid} after {max_retries} attempts]: {str(e)}. Using fallback summary.")
+                        print(f"[Theme {tid}] OpenAI summary failed after {max_retries} attempts: {str(e)[:100]}. Using fallback.")
                         summaries[tid] = base_summary
         else:
+            if not client:
+                print(f"[Theme {tid}] No OpenAI client - using fallback summary")
+            elif not meaningful_kws:
+                print(f"[Theme {tid}] No meaningful keywords - using fallback summary")
             summaries[tid] = base_summary
 
-    with open("data/theme_names.json", "w") as f:
+    with open("data/theme_names.json", "w", encoding="utf-8") as f:
         json.dump({int(k): v for k,v in theme_names.items()}, f, ensure_ascii=False, indent=2)
-    with open("data/theme_summaries.json", "w") as f:
+    with open("data/theme_summaries.json", "w", encoding="utf-8") as f:
         json.dump({int(k): v for k,v in summaries.items()}, f, ensure_ascii=False, indent=2)
 
     # ---------- Build ranked list & diversity-aware seed (A) ----------
@@ -517,5 +621,8 @@ def compute_themes_payload(
         # Only return themes with actual content
         final_themes = [t for t in themes if t["tweet_count"] > 0][:n_clusters]
 
-    used_llm = bool(client)
+    # Only mark as using LLM if AI was actually called and succeeded for at least one theme
+    used_llm = ai_used_for_any_theme
+    if client and not ai_used_for_any_theme:
+        print(f"[Themes] ⚠️  OpenAI client available but AI was not used (likely insufficient keywords or API errors). Using fallback mode.")
     return {"updated_at": pd.Timestamp.utcnow().isoformat(), "themes": final_themes, "used_llm": used_llm}

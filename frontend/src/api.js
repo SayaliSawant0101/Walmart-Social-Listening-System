@@ -43,6 +43,19 @@ export async function getTrend(start, end, period = "daily", offset = 0, limit =
   return data;
 }
 
+// --- Competitor Sentiment (Costco) ---
+export async function getCompetitorSummary(start, end) {
+  const { data } = await API.get("/sentiment/competitor/summary", { params: { start, end } });
+  return data;
+}
+
+export async function getCompetitorTrend(start, end, period = "daily", offset = 0, limit = 50) {
+  const { data } = await API.get("/sentiment/competitor/trend", {
+    params: { start, end, period, offset, limit },
+  });
+  return data;
+}
+
 // --- Aspects ---
 export async function getAspectSummary(start, end, asPercent = false) {
   const { data } = await API.get("/aspects/summary", {
@@ -64,6 +77,19 @@ export async function getAspectSentimentSplit(
   includeOthers = false
 ) {
   const { data } = await API.get("/aspects/sentiment-split", {
+    params: { start, end, as_percent: asPercent, include_others: includeOthers },
+  });
+  return data;
+}
+
+// --- Competitor Aspect × Sentiment (Stacked Bar) ---
+export async function getCompetitorAspectSentimentSplit(
+  start,
+  end,
+  asPercent = false,
+  includeOthers = false
+) {
+  const { data } = await API.get("/aspects/competitor/sentiment-split", {
     params: { start, end, as_percent: asPercent, include_others: includeOthers },
   });
   return data;
