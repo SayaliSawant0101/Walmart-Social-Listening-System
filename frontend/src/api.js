@@ -2,42 +2,35 @@
 import axios from "axios";
 
 /**
- * Base URL resolution:
- * 1) Use Netlify/Vite env var if provided: VITE_API_BASE_URL
- * 2) If running locally (Vite dev), use localhost backend
- * 3) If deployed and env var missing, fall back to Railway backend (prevents 127.0.0.1 calls)
- *
  * IMPORTANT:
- * - In Netlify, set: VITE_API_BASE_URL = https://walmart-social-listening-system-production.up.railway.app
+ * - Vite only injects env vars at BUILD time.
+ * - On Netlify, set: VITE_API_BASE_URL = https://<your-railway-app>.up.railway.app
+ * - This file also contains a hard fallback so production NEVER calls localhost.
  */
+
+// Read BOTH possible env var names (supports old configs too)
 const RAW_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
-  import.meta.env.VITE_API_BASE || // support older naming if you used it earlier
+  import.meta.env.VITE_API_BASE ||
   "";
 
-// Detect if the frontend is being served on localhost (dev)
-const IS_BROWSER = typeof window !== "undefined";
-const IS_LOCALHOST =
-  IS_BROWSER &&
-  (window.location.hostname === "localhost" ||
-    window.location.hostname === "127.0.0.1");
-
-// Final default if prod env var is missing
+// Hard fallback for production (so it NEVER calls localhost if env var is missing)
 const FALLBACK_RAILWAY =
   "https://walmart-social-listening-system-production.up.railway.app";
 
-const BASE_URL = (RAW_BASE_URL
-  ? RAW_BASE_URL
-  : import.meta.env.DEV || IS_LOCALHOST
-  ? "http://localhost:8000"
-  : FALLBACK_RAILWAY
+const BASE_URL = (
+  RAW_BASE_URL
+    ? RAW_BASE_URL
+    : import.meta.env.DEV
+    ? "http://localhost:8000"
+    : FALLBACK_RAILWAY
 ).replace(/\/+$/, "");
 
-// Optional: log once (helps debugging)
-if (import.meta.env.DEV) {
-  // eslint-disable-next-line no-console
-  console.log("[api.js] BASE_URL =", BASE_URL);
-}
+// Debug (leave for now; remove after it’s fixed)
+console.log("[api] MODE:", import.meta.env.MODE);
+console.log("[api] VITE_API_BASE_URL:", import.meta.env.VITE_API_BASE_URL);
+console.log("[api] VITE_API_BASE:", import.meta.env.VITE_API_BASE);
+console.log("[api] BASE_URL:", BASE_URL);
 
 // Main API instance
 const API = axios.create({
@@ -51,16 +44,15 @@ const LONG_API = axios.create({
   timeout: 600000, // 10 minutes
 });
 
-// --- Sentiment ---
+// --- Meta ---
 export async function getMeta() {
   const { data } = await API.get("/");
   return data?.date_range || null;
 }
 
+// --- Sentiment ---
 export async function getSummary(start, end) {
-  const { data } = await API.get("/sentiment/summary", {
-    params: { start, end },
-  });
+  const { data } = await API.get("/sentiment/summary", { params: { start, end } });
   return data;
 }
 
@@ -73,9 +65,7 @@ export async function getTrend(start, end, period = "daily", offset = 0, limit =
 
 // --- Competitor Sentiment (Costco) ---
 export async function getCompetitorSummary(start, end) {
-  const { data } = await API.get("/sentiment/competitor/summary", {
-    params: { start, end },
-  });
+  const { data } = await API.get("/sentiment/competitor/summary", { params: { start, end } });
   return data;
 }
 
@@ -95,19 +85,12 @@ export async function getAspectSummary(start, end, asPercent = false) {
 }
 
 export async function getAspectAvgScores(start, end) {
-  const { data } = await API.get("/aspects/avg-scores", {
-    params: { start, end },
-  });
+  const { data } = await API.get("/aspects/avg-scores", { params: { start, end } });
   return data;
 }
 
 // --- Aspect × Sentiment (Stacked Bar) ---
-export async function getAspectSentimentSplit(
-  start,
-  end,
-  asPercent = false,
-  includeOthers = false
-) {
+export async function getAspectSentimentSplit(start, end, asPercent = false, includeOthers = false) {
   const { data } = await API.get("/aspects/sentiment-split", {
     params: { start, end, as_percent: asPercent, include_others: includeOthers },
   });
@@ -115,27 +98,14 @@ export async function getAspectSentimentSplit(
 }
 
 // --- Competitor Aspect × Sentiment (Stacked Bar) ---
-export async function getCompetitorAspectSentimentSplit(
-  start,
-  end,
-  asPercent = false,
-  includeOthers = false
-) {
+export async function getCompetitorAspectSentimentSplit(start, end, asPercent = false, includeOthers = false) {
   const { data } = await API.get("/aspects/competitor/sentiment-split", {
     params: { start, end, as_percent: asPercent, include_others: includeOthers },
   });
   return data;
 }
 
-// Get raw aspect data for calculating "Others" category
-export async function getRawAspectData(start, end) {
-  const { data } = await API.get("/aspects/sentiment-split", {
-    params: { start, end, as_percent: false },
-  });
-  return data;
-}
-
-// Get sample tweets for specific aspect and sentiment
+// --- Sample tweets for specific aspect and sentiment ---
 export async function getSampleTweets(start, end, aspect, sentiment, limit = 10) {
   const { data } = await API.get("/tweets/sample", {
     params: { start, end, aspect, sentiment, limit },
@@ -143,18 +113,19 @@ export async function getSampleTweets(start, end, aspect, sentiment, limit = 10)
   return data.tweets || [];
 }
 
-// --- AI Insights ---
+// --- Executive Summary (AI Insights) ---
 export async function getExecutiveSummary(start, end, sample_per_sentiment = 250) {
-  const { data } = await LONG_API.get("/executive-summary", {
+  const { data } = await API.get("/executive-summary", {
     params: { start, end, sample_per_sentiment },
   });
   return data;
 }
 
+// --- Structured Brief (AI Insights) ---
 export async function getStructuredBrief(start, end, keyword = null, sample_size = 80) {
-  const { data } = await LONG_API.get("/structured-brief", {
-    params: { start, end, keyword, sample_size },
-  });
+  const params = { start, end, sample_size };
+  if (keyword) params.keyword = keyword;
+  const { data } = await API.get("/structured-brief", { params });
   return data;
 }
 
@@ -162,10 +133,12 @@ export async function getStructuredBrief(start, end, keyword = null, sample_size
 export async function fetchThemes({
   start = null,
   end = null,
-  n_clusters = null, // Auto-detect if null
+  n_clusters = null,
   emb_model = "sentence-transformers/all-MiniLM-L6-v2",
+  merge_similar = true,
+  force_refresh = false,
 } = {}) {
-  const params = {};
+  const params = { merge_similar, force_refresh };
   if (start) params.start = start;
   if (end) params.end = end;
   if (n_clusters !== null) params.n_clusters = n_clusters;
@@ -181,8 +154,10 @@ export async function fetchThemesCompetitor({
   end = null,
   n_clusters = null,
   emb_model = "sentence-transformers/all-MiniLM-L6-v2",
+  merge_similar = true,
+  force_refresh = false,
 } = {}) {
-  const params = {};
+  const params = { merge_similar, force_refresh };
   if (start) params.start = start;
   if (end) params.end = end;
   if (n_clusters !== null) params.n_clusters = n_clusters;
@@ -269,11 +244,6 @@ export async function downloadThemeTweetsReport(themeId, start, end) {
 
   const blob = new Blob([response.data], { type: "text/html" });
   const url = window.URL.createObjectURL(blob);
-
-  // Open in new tab instead of downloading
   window.open(url, "_blank");
-
-  setTimeout(() => {
-    window.URL.revokeObjectURL(url);
-  }, 10000);
+  setTimeout(() => window.URL.revokeObjectURL(url), 10000);
 }
