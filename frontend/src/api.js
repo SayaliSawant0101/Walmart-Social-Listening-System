@@ -1,15 +1,42 @@
 // frontend/src/api.js
 import axios from "axios";
-const RAW_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 
-const BASE_URL = (RAW_BASE_URL ||
-  (import.meta.env.DEV ? "http://localhost:8000" : "")
+/**
+ * Base URL resolution:
+ * 1) Use Netlify/Vite env var if provided: VITE_API_BASE_URL
+ * 2) If running locally (Vite dev), use localhost backend
+ * 3) If deployed and env var missing, fall back to Railway backend (prevents 127.0.0.1 calls)
+ *
+ * IMPORTANT:
+ * - In Netlify, set: VITE_API_BASE_URL = https://walmart-social-listening-system-production.up.railway.app
+ */
+const RAW_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_BASE || // support older naming if you used it earlier
+  "";
+
+// Detect if the frontend is being served on localhost (dev)
+const IS_BROWSER = typeof window !== "undefined";
+const IS_LOCALHOST =
+  IS_BROWSER &&
+  (window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1");
+
+// Final default if prod env var is missing
+const FALLBACK_RAILWAY =
+  "https://walmart-social-listening-system-production.up.railway.app";
+
+const BASE_URL = (RAW_BASE_URL
+  ? RAW_BASE_URL
+  : import.meta.env.DEV || IS_LOCALHOST
+  ? "http://localhost:8000"
+  : FALLBACK_RAILWAY
 ).replace(/\/+$/, "");
 
-if (import.meta.env.PROD && !BASE_URL) {
-  throw new Error(
-    "Missing VITE_API_BASE_URL in production. Set it in Netlify → Site settings → Environment variables."
-  );
+// Optional: log once (helps debugging)
+if (import.meta.env.DEV) {
+  // eslint-disable-next-line no-console
+  console.log("[api.js] BASE_URL =", BASE_URL);
 }
 
 // Main API instance
@@ -21,18 +48,19 @@ const API = axios.create({
 // Special API instance for long-running operations like theme generation
 const LONG_API = axios.create({
   baseURL: BASE_URL,
-  timeout: 600000, // 10 minutes for theme generation
+  timeout: 600000, // 10 minutes
 });
 
 // --- Sentiment ---
 export async function getMeta() {
   const { data } = await API.get("/");
-  // prefer aspect range if needed, but keep existing behavior
   return data?.date_range || null;
 }
 
 export async function getSummary(start, end) {
-  const { data } = await API.get("/sentiment/summary", { params: { start, end } });
+  const { data } = await API.get("/sentiment/summary", {
+    params: { start, end },
+  });
   return data;
 }
 
@@ -45,7 +73,9 @@ export async function getTrend(start, end, period = "daily", offset = 0, limit =
 
 // --- Competitor Sentiment (Costco) ---
 export async function getCompetitorSummary(start, end) {
-  const { data } = await API.get("/sentiment/competitor/summary", { params: { start, end } });
+  const { data } = await API.get("/sentiment/competitor/summary", {
+    params: { start, end },
+  });
   return data;
 }
 
@@ -65,7 +95,9 @@ export async function getAspectSummary(start, end, asPercent = false) {
 }
 
 export async function getAspectAvgScores(start, end) {
-  const { data } = await API.get("/aspects/avg-scores", { params: { start, end } });
+  const { data } = await API.get("/aspects/avg-scores", {
+    params: { start, end },
+  });
   return data;
 }
 
@@ -111,6 +143,21 @@ export async function getSampleTweets(start, end, aspect, sentiment, limit = 10)
   return data.tweets || [];
 }
 
+// --- AI Insights ---
+export async function getExecutiveSummary(start, end, sample_per_sentiment = 250) {
+  const { data } = await LONG_API.get("/executive-summary", {
+    params: { start, end, sample_per_sentiment },
+  });
+  return data;
+}
+
+export async function getStructuredBrief(start, end, keyword = null, sample_size = 80) {
+  const { data } = await LONG_API.get("/structured-brief", {
+    params: { start, end, keyword, sample_size },
+  });
+  return data;
+}
+
 // --- Themes (dynamic clustering + summaries) ---
 export async function fetchThemes({
   start = null,
@@ -118,7 +165,6 @@ export async function fetchThemes({
   n_clusters = null, // Auto-detect if null
   emb_model = "sentence-transformers/all-MiniLM-L6-v2",
 } = {}) {
-  // Build params without null/empty values
   const params = {};
   if (start) params.start = start;
   if (end) params.end = end;
@@ -126,17 +172,16 @@ export async function fetchThemes({
   if (emb_model) params.emb_model = emb_model;
 
   const { data } = await LONG_API.get("/themes", { params });
-  return data; // { updated_at, themes: [{id, name, summary, tweet_count}] }
+  return data;
 }
 
 // --- Themes for Competitor (Costco) ---
 export async function fetchThemesCompetitor({
   start = null,
   end = null,
-  n_clusters = null, // Auto-detect if null
+  n_clusters = null,
   emb_model = "sentence-transformers/all-MiniLM-L6-v2",
 } = {}) {
-  // Build params without null/empty values
   const params = {};
   if (start) params.start = start;
   if (end) params.end = end;
@@ -144,7 +189,7 @@ export async function fetchThemesCompetitor({
   if (emb_model) params.emb_model = emb_model;
 
   const { data } = await LONG_API.get("/themes/competitor", { params });
-  return data; // { updated_at, themes: [{id, name, summary, tweet_count}] }
+  return data;
 }
 
 // --- Raw Data Downloads ---
@@ -228,8 +273,7 @@ export async function downloadThemeTweetsReport(themeId, start, end) {
   // Open in new tab instead of downloading
   window.open(url, "_blank");
 
-  // Clean up the URL after a delay to free memory
   setTimeout(() => {
     window.URL.revokeObjectURL(url);
-  }, 10000); // 10 seconds delay
+  }, 10000);
 }
