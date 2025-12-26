@@ -6,3 +6,4 @@ pyarrow
 boto3
 python-dotenv
 requests
+scikit-learn==1.5.2
