@@ -305,26 +305,43 @@ def sentiment_trend(
     if sub.empty:
         return {"start": str(start), "end": str(end), "trend": []}
 
-    daily = (
+    # ---- counts per day per sentiment ----
+    daily_counts = (
         sub.groupby(["date_only", "sentiment_label"])
            .size().reset_index(name="count")
            .pivot(index="date_only", columns="sentiment_label", values="count")
            .fillna(0)
     )
-    daily = (daily.div(daily.sum(axis=1), axis=0) * 100).reset_index()
 
     for c in ["positive", "neutral", "negative"]:
-        if c not in daily.columns:
-            daily[c] = 0.0
+        if c not in daily_counts.columns:
+            daily_counts[c] = 0
 
-    trend = [
-        {"date": str(r["date_only"]),
-         "positive": float(r["positive"]),
-         "neutral":  float(r["neutral"]),
-         "negative": float(r["negative"])}
-        for _, r in daily.sort_values("date_only").iterrows()
-    ]
+    daily_counts = daily_counts[["positive", "neutral", "negative"]].copy()
+    totals = daily_counts.sum(axis=1).replace(0, 1)
+
+    # ---- percent per day ----
+    daily_pct = (daily_counts.div(totals, axis=0) * 100).round(2)
+
+    trend = []
+    for d in daily_counts.index:
+        trend.append({
+            "date": str(d),
+            # keep existing keys (PERCENT) for chart lines
+            "positive": float(daily_pct.loc[d, "positive"]),
+            "neutral":  float(daily_pct.loc[d, "neutral"]),
+            "negative": float(daily_pct.loc[d, "negative"]),
+            # add counts for tooltip
+            "counts": {
+                "positive": int(daily_counts.loc[d, "positive"]),
+                "neutral":  int(daily_counts.loc[d, "neutral"]),
+                "negative": int(daily_counts.loc[d, "negative"]),
+            },
+            "total": int(daily_counts.loc[d].sum()),
+        })
+
     return {"start": str(start), "end": str(end), "trend": trend}
+
 
 # --- Competitor Sentiment (Costco) ---
 @app.get("/sentiment/competitor/summary")
@@ -353,6 +370,7 @@ def sentiment_competitor_summary(
     return {"start": str(s), "end": str(e), **_sentiment_summary(sub)}
 
 @app.get("/sentiment/competitor/trend")
+@app.get("/sentiment/competitor/trend")
 def sentiment_competitor_trend(
     start: date = Query(default=None),
     end:   date = Query(default=None),
@@ -362,34 +380,45 @@ def sentiment_competitor_trend(
             status_code=404,
             content={"error": "Competitor data not available. Missing tweets_stage1_sentiment_comp.parquet"}
         )
-    
+
     s = start or SENT_COMP_MIN_DATE
     e = end or SENT_COMP_MAX_DATE
-    
+
     mask = (df_comp["date_only"] >= s) & (df_comp["date_only"] <= e)
     sub = df_comp.loc[mask]
     if sub.empty:
         return {"start": str(s), "end": str(e), "trend": []}
 
-    daily = (
+    daily_counts = (
         sub.groupby(["date_only", "sentiment_label"])
            .size().reset_index(name="count")
            .pivot(index="date_only", columns="sentiment_label", values="count")
            .fillna(0)
     )
-    daily = (daily.div(daily.sum(axis=1), axis=0) * 100).reset_index()
 
     for c in ["positive", "neutral", "negative"]:
-        if c not in daily.columns:
-            daily[c] = 0.0
+        if c not in daily_counts.columns:
+            daily_counts[c] = 0
 
-    trend = [
-        {"date": str(r["date_only"]),
-         "positive": float(r["positive"]),
-         "neutral":  float(r["neutral"]),
-         "negative": float(r["negative"])}
-        for _, r in daily.sort_values("date_only").iterrows()
-    ]
+    daily_counts = daily_counts[["positive", "neutral", "negative"]].copy()
+    totals = daily_counts.sum(axis=1).replace(0, 1)
+    daily_pct = (daily_counts.div(totals, axis=0) * 100).round(2)
+
+    trend = []
+    for d in daily_counts.index:
+        trend.append({
+            "date": str(d),
+            "positive": float(daily_pct.loc[d, "positive"]),
+            "neutral":  float(daily_pct.loc[d, "neutral"]),
+            "negative": float(daily_pct.loc[d, "negative"]),
+            "counts": {
+                "positive": int(daily_counts.loc[d, "positive"]),
+                "neutral":  int(daily_counts.loc[d, "neutral"]),
+                "negative": int(daily_counts.loc[d, "negative"]),
+            },
+            "total": int(daily_counts.loc[d].sum()),
+        })
+
     return {"start": str(s), "end": str(e), "trend": trend}
 
 # --- Aspects (simple distribution) ---
