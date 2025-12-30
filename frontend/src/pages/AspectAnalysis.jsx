@@ -42,9 +42,6 @@ export default function AspectAnalysis() {
   });
   const [loadingTweets, setLoadingTweets] = useState(false);
 
-  const [selectedAspect, setSelectedAspect] = useState("");
-  const [selectedFormat, setSelectedFormat] = useState("");
-
   // ---- load aspects × sentiment split ----
   useEffect(() => {
     if (!start || !end) return;
@@ -126,7 +123,12 @@ export default function AspectAnalysis() {
         `User experience with ${aspect} was ${sentiment}`,
         `Review of ${aspect} service - ${sentiment} sentiment`,
       ];
-      setSampleTweetsModal({ isOpen: true, aspect, sentiment, tweets: sampleTweets });
+      setSampleTweetsModal({
+        isOpen: true,
+        aspect,
+        sentiment,
+        tweets: sampleTweets,
+      });
     } finally {
       setLoadingTweets(false);
     }
@@ -192,131 +194,6 @@ export default function AspectAnalysis() {
       } else {
         alert(`Failed to download Excel file: ${error.message}`);
       }
-    }
-  };
-
-  const downloadAspectTweetsAsExcel = async (aspect) => {
-    try {
-      const [positiveTweets, neutralTweets, negativeTweets] = await Promise.all([
-        getSampleTweets(start, end, aspect, "positive", 1000),
-        getSampleTweets(start, end, aspect, "neutral", 1000),
-        getSampleTweets(start, end, aspect, "negative", 1000),
-      ]);
-
-      const allTweets = [
-        ...positiveTweets.map((tweet) => ({ tweet, sentiment: "positive" })),
-        ...neutralTweets.map((tweet) => ({ tweet, sentiment: "neutral" })),
-        ...negativeTweets.map((tweet) => ({ tweet, sentiment: "negative" })),
-      ];
-
-      if (allTweets.length === 0) {
-        alert("No tweets found to download");
-        return;
-      }
-
-      const excelData = allTweets.map((item, index) => ({
-        "Tweet #": index + 1,
-        "Tweet Text": item.tweet,
-        Aspect: aspect,
-        Sentiment: item.sentiment,
-        "Date Range": `${start} to ${end}`,
-      }));
-
-      const csvContent = [
-        Object.keys(excelData[0]).join(","),
-        ...excelData.map((row) =>
-          Object.values(row)
-            .map((val) => `"${String(val).replace(/"/g, '""')}"`)
-            .join(",")
-        ),
-      ].join("\n");
-
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      link.setAttribute("href", url);
-      link.setAttribute("download", `tweets_${aspect}_all_sentiments_${start}_to_${end}.csv`);
-      link.style.visibility = "hidden";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error("Failed to download aspect Excel:", error);
-      alert(`Failed to download Excel file: ${error.message}`);
-    }
-  };
-
-  const downloadAspectTweetsAsPDF = async (aspect) => {
-    try {
-      const [positiveTweets, neutralTweets, negativeTweets] = await Promise.all([
-        getSampleTweets(start, end, aspect, "positive", 1000),
-        getSampleTweets(start, end, aspect, "neutral", 1000),
-        getSampleTweets(start, end, aspect, "negative", 1000),
-      ]);
-
-      const allTweets = [
-        ...positiveTweets.map((tweet) => ({ tweet, sentiment: "positive" })),
-        ...neutralTweets.map((tweet) => ({ tweet, sentiment: "neutral" })),
-        ...negativeTweets.map((tweet) => ({ tweet, sentiment: "negative" })),
-      ];
-
-      if (allTweets.length === 0) {
-        alert("No tweets found to download");
-        return;
-      }
-
-      const pdfContent = `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Tweets Report - ${aspect} (All Sentiments)</title>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              h1 { color: #333; }
-              .meta { background: #f5f5f5; padding: 10px; margin-bottom: 20px; }
-              .tweet { margin: 10px 0; padding: 10px; border-left: 3px solid #007bff; }
-              .tweet-number { font-weight: bold; color: #666; }
-              .sentiment-positive { border-left-color: #22c55e; }
-              .sentiment-neutral { border-left-color: #f59e0b; }
-              .sentiment-negative { border-left-color: #ef4444; }
-            </style>
-          </head>
-          <body>
-            <h1>Tweets Report - ${aspect}</h1>
-            <div class="meta">
-              <p><strong>Aspect:</strong> ${aspect}</p>
-              <p><strong>Sentiments:</strong> All (Positive, Neutral, Negative)</p>
-              <p><strong>Date Range:</strong> ${start} to ${end}</p>
-              <p><strong>Total Tweets:</strong> ${allTweets.length}</p>
-              <p><strong>Breakdown:</strong> Positive: ${positiveTweets.length}, Neutral: ${neutralTweets.length}, Negative: ${negativeTweets.length}</p>
-            </div>
-            ${allTweets
-              .map(
-                (item, index) => `
-              <div class="tweet sentiment-${item.sentiment}">
-                <div class="tweet-number">Tweet ${index + 1} (${item.sentiment})</div>
-                <div>${String(item.tweet).replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
-              </div>
-            `
-              )
-              .join("")}
-          </body>
-        </html>
-      `;
-
-      const newWindow = window.open("", "_blank");
-      if (!newWindow) {
-        alert("Please allow popups for this site to download PDF");
-        return;
-      }
-      newWindow.document.write(pdfContent);
-      newWindow.document.close();
-      newWindow.focus();
-      setTimeout(() => newWindow.print(), 1000);
-    } catch (error) {
-      console.error("Failed to download aspect PDF:", error);
-      alert(`Failed to download PDF file: ${error.message}`);
     }
   };
 
@@ -393,87 +270,6 @@ export default function AspectAnalysis() {
       } else {
         alert(`Failed to download PDF file: ${error.message}`);
       }
-    }
-  };
-
-  const handleDownload = async () => {
-    if (!selectedAspect || !selectedFormat) return;
-
-    try {
-      if (selectedAspect === "all") {
-        if (selectedFormat === "csv") {
-          await downloadAllTweetsAsExcel();
-        } else if (selectedFormat === "pdf") {
-          await viewAllTweetsAsPDF();
-        }
-      } else {
-        if (selectedFormat === "csv") {
-          await downloadAspectTweetsAsExcel(selectedAspect);
-        } else if (selectedFormat === "pdf") {
-          await downloadAspectTweetsAsPDF(selectedAspect);
-        }
-      }
-    } catch (error) {
-      console.error("Download failed:", error);
-      alert("Download failed. Please try again.");
-    }
-  };
-
-  // Download all tweets as CSV
-  const downloadAllTweetsAsExcel = async () => {
-    try {
-      const allAspects = stackedBarData.labels || [];
-      const allTweets = [];
-
-      for (const aspect of allAspects) {
-        const [positiveTweets, neutralTweets, negativeTweets] = await Promise.all([
-          getSampleTweets(start, end, aspect, "positive", 1000),
-          getSampleTweets(start, end, aspect, "neutral", 1000),
-          getSampleTweets(start, end, aspect, "negative", 1000),
-        ]);
-
-        allTweets.push(
-          ...positiveTweets.map((tweet) => ({ tweet, aspect, sentiment: "positive" })),
-          ...neutralTweets.map((tweet) => ({ tweet, aspect, sentiment: "neutral" })),
-          ...negativeTweets.map((tweet) => ({ tweet, aspect, sentiment: "negative" }))
-        );
-      }
-
-      if (allTweets.length === 0) {
-        alert("No tweets found to download");
-        return;
-      }
-
-      const csvData = allTweets.map((item, index) => ({
-        "Tweet #": index + 1,
-        "Tweet Text": item.tweet,
-        Aspect: item.aspect,
-        Sentiment: item.sentiment,
-        "Date Range": `${start} to ${end}`,
-      }));
-
-      const csvContent = [
-        Object.keys(csvData[0]).join(","),
-        ...csvData.map((row) =>
-          Object.values(row)
-            .map((val) => `"${String(val).replace(/"/g, '""')}"`)
-            .join(",")
-        ),
-      ].join("\n");
-
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-      link.setAttribute("href", url);
-      link.setAttribute("download", `all_tweets_${start}_to_${end}.csv`);
-      link.style.visibility = "hidden";
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error("Failed to download all tweets as Excel:", error);
-      alert("Failed to download all tweets as Excel. Please try again.");
     }
   };
 
@@ -675,7 +471,6 @@ export default function AspectAnalysis() {
 
         const brandY = xAxis.bottom + 0;
         const aspectY = xAxis.bottom + 28;
-        
 
         const aspectColor = "#ffffff";
         const brandColor = "#ffffff";
@@ -749,7 +544,7 @@ export default function AspectAnalysis() {
             const chart = legend.chart;
             const sentiment = (legendItem.text || "").toLowerCase();
 
-            chart.data.datasets.forEach((ds, i) => {
+            chart.data.datasets.forEach((ds) => {
               if ((ds.sentimentKey || "").toLowerCase() === sentiment) {
                 ds.hidden = !ds.hidden;
               }
@@ -976,63 +771,6 @@ export default function AspectAnalysis() {
                 plugins={[ChartDataLabels, brandAspectLabelPlugin]}
               />
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Download Section */}
-      {!loading && split && (
-        <div className="-mt-2 bg-gradient-to-br from-slate-800/50 to-slate-700/50 backdrop-blur-sm rounded-2xl p-4 border border-slate-600/30 shadow-xl">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <span className="text-slate-200 text-sm">Download tweets:</span>
-
-              <select
-                value={selectedAspect || ""}
-                onChange={(e) => setSelectedAspect(e.target.value)}
-                className="bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="">Select Aspect</option>
-                <option value="all">All Tweets</option>
-                {(stackedBarData.labels || []).map((aspect) => (
-                  <option key={aspect} value={aspect}>
-                    {aspect.charAt(0).toUpperCase() + aspect.slice(1)}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={selectedFormat || ""}
-                onChange={(e) => setSelectedFormat(e.target.value)}
-                className="bg-slate-700 text-slate-200 px-2 py-1 rounded text-sm border border-slate-600 focus:border-blue-500 focus:outline-none"
-              >
-                <option value="">Select Format</option>
-                <option value="csv">CSV</option>
-                <option value="pdf">PDF</option>
-              </select>
-
-              <button
-                onClick={handleDownload}
-                disabled={!selectedAspect || !selectedFormat}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white px-3 py-1 rounded text-sm transition-colors flex items-center space-x-1"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-                <span>Download</span>
-              </button>
-            </div>
-
-            <div className="text-xs text-slate-400 text-right max-w-sm">
-              <div className="mb-1">💡 <strong>Tips:</strong></div>
-              <div>• Click bars to view top tweets by aspect by sentiment</div>
-              <div>• Use "View All Tweets" to see all tweets used for analysis</div>
-            </div>
           </div>
         </div>
       )}
