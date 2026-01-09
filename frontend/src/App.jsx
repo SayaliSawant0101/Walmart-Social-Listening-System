@@ -8,7 +8,7 @@ import AspectAnalysis from "./pages/AspectAnalysis";
 import ThemeAnalysis from "./pages/ThemeAnalysis";
 import AIInsights from "./pages/AIInsights";
 
-/* ---------------- Footer + Build Stamp ---------------- */
+/* -------- Build Stamp + Footer -------- */
 
 function BuildStamp() {
   const commit = import.meta.env.VITE_GIT_COMMIT || "local";
@@ -26,7 +26,7 @@ function BuildStamp() {
 
 function AppFooter() {
   return (
-    <footer className="mt-10 px-6 py-4 border-t border-white/10 text-xs text-white/80">
+    <footer className="ml-64 mt-10 px-6 py-4 border-t border-white/10 text-xs text-white/80">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span>
@@ -58,10 +58,9 @@ function AppFooter() {
   );
 }
 
-/* ---------------- Main App ---------------- */
+/* -------- Main App -------- */
 
 export default function App() {
-  // Browser title watermark
   React.useEffect(() => {
     document.title = "Sayali Sawant | Walmart Social Listening System";
   }, []);
@@ -69,22 +68,19 @@ export default function App() {
   return (
     <DateProvider>
       <Router>
-        <div className="min-h-screen bg-slate-900 text-white flex">
+        <div className="min-h-screen bg-slate-900 text-white">
           <Navigation />
 
-          <div className="flex-1 ml-64">
-            <main className="min-h-screen">
-              <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/aspect-analysis" element={<AspectAnalysis />} />
-                <Route path="/theme-analysis" element={<ThemeAnalysis />} />
-                <Route path="/ai-insights" element={<AIInsights />} />
-              </Routes>
-            </main>
+          <main className="ml-64">
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/aspect-analysis" element={<AspectAnalysis />} />
+              <Route path="/theme-analysis" element={<ThemeAnalysis />} />
+              <Route path="/ai-insights" element={<AIInsights />} />
+            </Routes>
+          </main>
 
-            {/* Ownership footer */}
-            <AppFooter />
-          </div>
+          <AppFooter />
         </div>
       </Router>
     </DateProvider>
