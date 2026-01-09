@@ -1,4 +1,3 @@
-// frontend/src/components/Navigation.jsx
 import React from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useDate } from "../contexts/DateContext";
@@ -56,11 +55,42 @@ export default function Navigation() {
               <div className="w-12 h-12 bg-gradient-to-br from-emerald-400 to-cyan-400 rounded-2xl flex items-center justify-center shadow-lg">
                 <span className="text-slate-900 font-bold text-xl">W</span>
               </div>
+
+              {/* Title + Ownership */}
               <div>
                 <h1 className="text-2xl font-bold text-white">
                   Walmart Social Intelligence
                 </h1>
+
                 <p className="text-slate-400">Advanced Analytics Platform</p>
+
+                {/* Ownership watermark */}
+                <div className="mt-1 text-xs text-slate-400 flex flex-wrap items-center gap-2">
+                  <span>
+                    Built by{" "}
+                    <span className="font-semibold text-slate-200">
+                      Sayali Sawant
+                    </span>
+                  </span>
+                  <span className="opacity-50">•</span>
+                  <a
+                    href="https://github.com/SayaliSawant0101/Walmart-Social-Listening-System"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-slate-200"
+                  >
+                    GitHub
+                  </a>
+                  <span className="opacity-50">•</span>
+                  <a
+                    href="https://sayalis.org"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline hover:text-slate-200"
+                  >
+                    Portfolio
+                  </a>
+                </div>
               </div>
             </div>
           </div>
@@ -72,7 +102,6 @@ export default function Navigation() {
         <div className="p-4">
           <div className="space-y-2">
             {navItems.map((item) => {
-              // Define icons for each page
               const getIcon = (path) => {
                 switch (path) {
                   case "/":
@@ -146,21 +175,7 @@ export default function Navigation() {
                       </svg>
                     );
                   default:
-                    return (
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
-                        />
-                      </svg>
-                    );
+                    return null;
                 }
               };
 
