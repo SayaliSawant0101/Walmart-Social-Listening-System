@@ -36,31 +36,38 @@ export default function Navigation() {
               <span className="text-slate-900 font-bold text-xl">W</span>
             </div>
 
-            {/* SINGLE TITLE LINE WITH OWNERSHIP */}
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white flex flex-wrap items-center gap-2">
-                <span>Walmart Social Intelligence</span>
-                <span className="text-white/50">•</span>
-                <span>Built by Sayali Sawant</span>
-                <span className="text-white/50">•</span>
-                <a
-                  href="https://github.com/SayaliSawant0101/Walmart-Social-Listening-System"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hover:text-emerald-300 transition-colors"
-                >
-                  GitHub
-                </a>
-                <span className="text-white/50">•</span>
-                <a
-                  href="https://sayalis.org"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="hover:text-emerald-300 transition-colors"
-                >
-                  Portfolio
-                </a>
-              </h1>
+            {/* TITLE ROW */}
+            <div className="flex-1">
+              <div className="flex items-center justify-between gap-4">
+                {/* Left: Product title */}
+                <h1 className="text-2xl font-bold tracking-tight text-white whitespace-nowrap">
+                  Walmart Social Intelligence
+                </h1>
+
+                {/* Right: Ownership + links */}
+                <div className="flex items-center gap-2 text-2xl font-bold tracking-tight text-white whitespace-nowrap">
+                  <span className="text-white/50">•</span>
+                  <span>Built by Sayali Sawant</span>
+                  <span className="text-white/50">•</span>
+                  <a
+                    href="https://github.com/SayaliSawant0101/Walmart-Social-Listening-System"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-4 hover:text-emerald-300 transition-colors"
+                  >
+                    GitHub
+                  </a>
+                  <span className="text-white/50">•</span>
+                  <a
+                    href="https://sayalis.org"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline underline-offset-4 hover:text-emerald-300 transition-colors"
+                  >
+                    Portfolio
+                  </a>
+                </div>
+              </div>
 
               <p className="text-slate-400">
                 Advanced Analytics Platform
