@@ -8,9 +8,9 @@ import AspectAnalysis from "./pages/AspectAnalysis";
 import ThemeAnalysis from "./pages/ThemeAnalysis";
 import AIInsights from "./pages/AIInsights";
 
-/* -------- Build Stamp + Footer -------- */
+/* ---------- Build Stamp Header ---------- */
 
-function BuildStamp() {
+function BuildStampHeader() {
   const commit = import.meta.env.VITE_GIT_COMMIT || "local";
   const context = import.meta.env.VITE_NETLIFY_CONTEXT || "dev";
   const buildTime = import.meta.env.VITE_BUILD_TIME || "";
@@ -18,20 +18,11 @@ function BuildStamp() {
   const shortCommit = commit ? commit.slice(0, 7) : "local";
 
   return (
-    <div className="text-xs opacity-60 whitespace-nowrap">
-      Build: {buildTime || "N/A"} • {context} • {shortCommit}
-    </div>
-  );
-}
-
-function AppFooter() {
-  return (
-    <footer className="ml-64 mt-10 px-6 py-4 border-t border-white/10 text-xs text-white/80">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="fixed top-0 left-0 right-0 z-50 bg-slate-950/90 backdrop-blur border-b border-white/10">
+      <div className="ml-64 px-6 py-2 text-xs text-white/80 flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span>
-            © {new Date().getFullYear()} Built by{" "}
-            <span className="font-semibold">Sayali Sawant</span>
+            Built by <span className="font-semibold">Sayali Sawant</span>
           </span>
           <span className="opacity-50">•</span>
           <a
@@ -40,7 +31,7 @@ function AppFooter() {
             rel="noreferrer"
             className="underline hover:opacity-90"
           >
-            Source (GitHub)
+            GitHub
           </a>
           <span className="opacity-50">•</span>
           <a
@@ -52,13 +43,16 @@ function AppFooter() {
             Portfolio
           </a>
         </div>
-        <BuildStamp />
+
+        <div className="opacity-60 whitespace-nowrap">
+          Build: {buildTime || "N/A"} • {context} • {shortCommit}
+        </div>
       </div>
-    </footer>
+    </div>
   );
 }
 
-/* -------- Main App -------- */
+/* ---------- Main App ---------- */
 
 export default function App() {
   React.useEffect(() => {
@@ -71,7 +65,11 @@ export default function App() {
         <div className="min-h-screen bg-slate-900 text-white">
           <Navigation />
 
-          <main className="ml-64">
+          {/* Ownership header */}
+          <BuildStampHeader />
+
+          {/* Push content down so it doesn't hide under header */}
+          <main className="ml-64 pt-10">
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/aspect-analysis" element={<AspectAnalysis />} />
@@ -79,8 +77,6 @@ export default function App() {
               <Route path="/ai-insights" element={<AIInsights />} />
             </Routes>
           </main>
-
-          <AppFooter />
         </div>
       </Router>
     </DateProvider>
