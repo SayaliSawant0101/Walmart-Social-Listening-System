@@ -9,7 +9,7 @@ import AIInsights from "./pages/AIInsights";
 
 export default function App() {
   React.useEffect(() => {
-    document.title = "Sayali Sawant | Walmart Social Listening System";
+    document.title = "Sayali Sawant | AI-Powered Social Listening System";
   }, []);
 
   return (
