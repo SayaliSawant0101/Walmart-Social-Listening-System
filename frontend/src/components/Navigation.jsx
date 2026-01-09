@@ -36,20 +36,13 @@ export default function Navigation() {
               <span className="text-slate-900 font-bold text-xl">W</span>
             </div>
 
-            {/* Title + Ownership */}
+            {/* SINGLE TITLE LINE WITH OWNERSHIP */}
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">
-                Walmart Social Intelligence
-              </h1>
-
-              <p className="text-slate-400">
-                Advanced Analytics Platform
-              </p>
-
-              {/* Ownership – SAME STYLE FAMILY AS TITLE */}
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm font-semibold tracking-tight text-white/90">
+              <h1 className="text-2xl font-bold tracking-tight text-white flex flex-wrap items-center gap-2">
+                <span>Walmart Social Intelligence</span>
+                <span className="text-white/50">•</span>
                 <span>Built by Sayali Sawant</span>
-                <span className="text-white/40">•</span>
+                <span className="text-white/50">•</span>
                 <a
                   href="https://github.com/SayaliSawant0101/Walmart-Social-Listening-System"
                   target="_blank"
@@ -58,7 +51,7 @@ export default function Navigation() {
                 >
                   GitHub
                 </a>
-                <span className="text-white/40">•</span>
+                <span className="text-white/50">•</span>
                 <a
                   href="https://sayalis.org"
                   target="_blank"
@@ -67,7 +60,11 @@ export default function Navigation() {
                 >
                   Portfolio
                 </a>
-              </div>
+              </h1>
+
+              <p className="text-slate-400">
+                Advanced Analytics Platform
+              </p>
             </div>
           </div>
         </div>
