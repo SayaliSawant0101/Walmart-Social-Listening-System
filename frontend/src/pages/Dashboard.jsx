@@ -1,7 +1,10 @@
+
 // frontend/src/pages/Dashboard.jsx
 import React, { useEffect, useMemo, useState } from "react";
-import { Line } from "react-chartjs-2";
+import { Line, Bar } from "react-chartjs-2";
 import "chart.js/auto";
+import ChartDataLabels from "chartjs-plugin-datalabels";
+import { Chart } from "chart.js";
 import {
   getSummary,
   getTrend,
@@ -55,8 +58,12 @@ export default function Dashboard() {
   });
   const [loadingDateAspects, setLoadingDateAspects] = useState(false);
 
-  // We’ll keep a cache of daily counts keyed by YYYY-MM-DD
+  // We'll keep a cache of daily counts keyed by YYYY-MM-DD
   const [tweetCountsCache, setTweetCountsCache] = useState({});
+
+  // Aspect data for sentiment drivers
+  const [walmartAspectData, setWalmartAspectData] = useState(null);
+  const [costcoAspectData, setCostcoAspectData] = useState(null);
 
   // Function to get actual tweet counts for a specific date (day window)
   const getTweetCountsForDate = async (date) => {
@@ -287,6 +294,213 @@ export default function Dashboard() {
       }
     })();
   }, [start, end, timePeriod, selectedBrand]);
+
+  // ---- load aspect data for sentiment drivers ----
+  useEffect(() => {
+    if (!start || !end) return;
+
+    (async () => {
+      try {
+        // Load Walmart aspect data
+        const walmartData = await getAspectSentimentSplit(start, end, true, true);
+        setWalmartAspectData(walmartData);
+
+        // Load Costco aspect data
+        try {
+          const costcoData = await getCompetitorAspectSentimentSplit(start, end, true, true);
+          setCostcoAspectData(costcoData);
+        } catch (error) {
+          console.error("Failed to load Costco aspect data:", error);
+          setCostcoAspectData(null);
+        }
+      } catch (error) {
+        console.error("Failed to load aspect data:", error);
+        setWalmartAspectData(null);
+      }
+    })();
+  }, [start, end]);
+
+  // Helper function to get top positive and negative aspects
+  const getTopAspects = (aspectData, sentiment, topN = 3) => {
+    if (!aspectData?.labels || !aspectData?.counts) return [];
+
+    const labels = aspectData.labels;
+    const counts = aspectData.counts[sentiment] || [];
+    const aspects = labels
+      .map((label, index) => ({
+        aspect: label === "others" ? "Others" : label.charAt(0).toUpperCase() + label.slice(1),
+        count: counts[index] || 0,
+      }))
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, topN);
+
+    return aspects.map((a) => a.aspect);
+  };
+
+  // Build stacked bar chart data for Walmart aspect sentiment breakdown
+  const stackedBarData = useMemo(() => {
+    if (!walmartAspectData) return { labels: [], datasets: [] };
+
+    const walmartLabels = walmartAspectData?.labels || [];
+    const labels = walmartLabels.map((t) => String(t).toUpperCase());
+
+    const wPos = walmartAspectData?.counts?.positive || [];
+    const wNeu = walmartAspectData?.counts?.neutral || [];
+    const wNeg = walmartAspectData?.counts?.negative || [];
+
+    const wTotals = labels.map((_, i) => (wPos[i] || 0) + (wNeu[i] || 0) + (wNeg[i] || 0));
+
+    return {
+      labels,
+      datasets: [
+        { label: "Positive", sentimentKey: "positive", brand: "walmart", data: wPos, backgroundColor: "#4ade80", stack: "Walmart", totals: wTotals },
+        { label: "Neutral", sentimentKey: "neutral", brand: "walmart", data: wNeu, backgroundColor: "#fbbf24", stack: "Walmart", totals: wTotals },
+        { label: "Negative", sentimentKey: "negative", brand: "walmart", data: wNeg, backgroundColor: "#f87171", stack: "Walmart", totals: wTotals },
+      ],
+    };
+  }, [walmartAspectData]);
+
+  // Build stacked bar chart data for Costco aspect sentiment breakdown
+  const costcoStackedBarData = useMemo(() => {
+    if (!costcoAspectData) return { labels: [], datasets: [] };
+
+    const costcoLabels = costcoAspectData?.labels || [];
+    const labels = costcoLabels.map((t) => String(t).toUpperCase());
+
+    const cPos = costcoAspectData?.counts?.positive || [];
+    const cNeu = costcoAspectData?.counts?.neutral || [];
+    const cNeg = costcoAspectData?.counts?.negative || [];
+
+    const cTotals = labels.map((_, i) => (cPos[i] || 0) + (cNeu[i] || 0) + (cNeg[i] || 0));
+
+    return {
+      labels,
+      datasets: [
+        { label: "Positive", sentimentKey: "positive", brand: "costco", data: cPos, backgroundColor: "#4ade80", stack: "Costco", totals: cTotals },
+        { label: "Neutral", sentimentKey: "neutral", brand: "costco", data: cNeu, backgroundColor: "#fbbf24", stack: "Costco", totals: cTotals },
+        { label: "Negative", sentimentKey: "negative", brand: "costco", data: cNeg, backgroundColor: "#f87171", stack: "Costco", totals: cTotals },
+      ],
+    };
+  }, [costcoAspectData]);
+
+  // Chart options for the bar chart
+  const barChartOptions = useMemo(() => {
+    return {
+      indexAxis: 'y', // Make it a horizontal bar chart
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: {
+        padding: {
+          bottom: 0,
+          left: 10,
+          right: 10,
+        },
+      },
+      plugins: {
+        legend: {
+          position: "top",
+          labels: {
+            color: "#64748b",
+            font: { size: 11, weight: "bold" },
+            generateLabels: function () {
+              const mk = (text, fillStyle) => ({
+                text,
+                fillStyle,
+                strokeStyle: fillStyle,
+                lineWidth: 2,
+                hidden: false,
+                datasetIndex: -1,
+                fontColor: "#64748b",
+                usePointStyle: true,
+                pointStyle: "line",
+              });
+              return [
+                mk("Positive", "#4ade80"),
+                mk("Neutral", "#fbbf24"),
+                mk("Negative", "#f87171"),
+              ];
+            },
+          },
+          onClick: (e, legendItem, legend) => {
+            const chart = legend.chart;
+            const sentiment = (legendItem.text || "").toLowerCase();
+
+            chart.data.datasets.forEach((ds) => {
+              if ((ds.sentimentKey || "").toLowerCase() === sentiment) {
+                ds.hidden = !ds.hidden;
+              }
+            });
+            chart.update();
+          },
+        },
+        datalabels: {
+          display: (context) => {
+            const v = context?.parsed?.x ?? 0;
+            return v > 0;
+          },
+          color: "white",
+          font: { weight: "bold", size: 10 },
+          formatter: (value, context) => {
+            const totals = context.dataset?.totals || [];
+            const total = totals[context.dataIndex] || 0;
+            const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+            return value > 0 ? `${pct}%` : "";
+          },
+          anchor: "center",
+          align: "center",
+          offset: 0,
+          padding: 0,
+        },
+        tooltip: {
+          callbacks: {
+            title: (items) => items?.[0]?.label || "",
+            label: (ctx) => {
+              const sentiment = ctx.dataset?.label || "";
+              const val = ctx.parsed?.x ?? 0;
+              return `${sentiment}: ${val.toLocaleString()}`;
+            },
+            afterLabel: (ctx) => {
+              const totals = ctx.dataset?.totals || [];
+              const total = totals[ctx.dataIndex] || 0;
+              const value = ctx.parsed?.x ?? 0;
+              const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+              return `Total: ${total.toLocaleString()} • ${pct}%`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: {
+            callback: (v) => v,
+            color: "#64748b",
+            font: { size: 10 },
+            padding: 8,
+          },
+          grid: {
+            color: "rgba(148, 163, 184, 0.15)",
+            lineWidth: 1,
+          },
+        },
+        y: {
+          stacked: false,
+          grid: { display: false },
+          categoryPercentage: 0.9,
+          barPercentage: 0.95,
+          ticks: {
+            color: "#64748b",
+            font: { size: 9, weight: "normal" },
+            padding: 6,
+            autoSkip: false,
+          },
+        },
+      },
+    };
+  }, []);
+
 
   // ---- load more trend data ----
   const loadMoreData = async () => {
@@ -582,13 +796,13 @@ export default function Dashboard() {
   const displayPct = selectedBrand === "all" ? combinedPct : pct;
 
   return (
-    <div className="h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 overflow-hidden">
-      <div className="h-full flex flex-col px-1 py-0.5 max-w-8xl mx-auto">
+    <div className="h-screen bg-slate-900 overflow-hidden">
+      <div className="h-full flex flex-col px-4 py-2 max-w-7xl mx-auto">
         {/* Error & Loading States */}
         {err && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 mb-4 backdrop-blur-sm">
+          <div className="bg-red-900/30 border border-red-700 text-red-300 rounded-xl p-4 mb-4">
             <div className="flex items-center space-x-3">
-              <svg className="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -596,7 +810,7 @@ export default function Dashboard() {
                   d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
                 />
               </svg>
-              <span className="text-red-300 font-semibold">{err}</span>
+              <span className="font-semibold">{err}</span>
             </div>
           </div>
         )}
@@ -604,7 +818,7 @@ export default function Dashboard() {
         {(loading || metaLoading) && (
           <div className="flex items-center justify-center h-full">
             <div className="flex flex-col items-center space-y-4">
-              <div className="w-8 h-8 border-3 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+              <div className="w-8 h-8 border-3 border-emerald-500 border-t-transparent rounded-full animate-spin"></div>
               <span className="text-slate-300 font-semibold text-lg">
                 {metaLoading ? "Loading metadata..." : "Loading analytics..."}
               </span>
@@ -614,205 +828,165 @@ export default function Dashboard() {
 
         {!loading && !metaLoading && (
           <>
-            {/* Ultra-Compact Analytics Dashboard Header */}
-            <div className="mb-0.5 pt-2 pb-2">
+            {/* Analytics Dashboard Header - Dark Theme */}
+            <div className="mb-2 pt-2 pb-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <div className="w-6 h-6 bg-gradient-to-br from-emerald-400 to-cyan-400 rounded-lg flex items-center justify-center shadow-lg ml-2">
-                    <svg className="w-3 h-3 text-slate-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className="w-7 h-7 bg-gradient-to-br from-emerald-400 to-cyan-400 rounded-lg flex items-center justify-center shadow-md">
+                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2-2z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5a2 2 0 012-2h4a2 2 0 012 2v2H8V5z" />
                     </svg>
                   </div>
                   <div className="px-2 py-1">
-                    <h1 className="text-xl font-bold text-white">Analytics Dashboard</h1>
-                    <p className="text-slate-400 text-sm">Real-time sentiment analysis</p>
+                    <h1 className="text-xl font-semibold text-white">Analytics Dashboard</h1>
+                    <p className="text-slate-400 text-sm">
+                      This dashboard analyzes public social media conversations to compare sentiment, aspects, and emerging themes across major retail brands (Walmart vs Costco).
+                    </p>
+                    {/* Date Range Controls */}
+                    <div className="flex items-center space-x-2 mt-3">
+                      <div className="flex items-center space-x-1 bg-slate-800 rounded-md border border-slate-700 px-2 py-1 shadow-sm">
+                        <span className="text-xs text-slate-300 font-medium">Date:</span>
+                        <input
+                          type="date"
+                          value={start || ""}
+                          min={meta?.min || ""}
+                          max={end || meta?.max || ""}
+                          onChange={(e) => setStart(iso(e.target.value))}
+                          className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                        />
+                        <span className="text-slate-500 text-xs">to</span>
+                        <input
+                          type="date"
+                          value={end || ""}
+                          min={start || meta?.min || ""}
+                          max={meta?.max || ""}
+                          onChange={(e) => setEnd(iso(e.target.value))}
+                          className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-2">
-                  {/* Brand Selector */}
-                  <div className="flex items-center space-x-1 bg-slate-700/30 backdrop-blur-sm rounded-md border border-slate-600/50 px-2 py-2">
-                    <span className="text-xs text-slate-200 font-medium">Brand:</span>
-                    <select
-                      value={selectedBrand}
-                      onChange={(e) => setSelectedBrand(e.target.value)}
-                      className="px-2 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
-                    >
-                      <option value="walmart">Walmart</option>
-                      <option value="costco">Costco</option>
-                      <option value="all">All</option>
-                    </select>
-                  </div>
-
-                  {/* Date Range Controls */}
-                  <div className="flex items-center space-x-1 bg-slate-700/30 backdrop-blur-sm rounded-md border border-slate-600/50 px-3 py-2">
-                    <div className="w-1 h-1 bg-gradient-to-r from-emerald-400 to-cyan-400 rounded-full"></div>
-                    <span className="text-xs text-slate-200 font-medium">Date:</span>
-                    <input
-                      type="date"
-                      value={start || ""}
-                      min={meta?.min || ""}
-                      max={end || meta?.max || ""}
-                      onChange={(e) => setStart(iso(e.target.value))}
-                      className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
-                    />
-                    <span className="text-slate-400 text-xs">to</span>
-                    <input
-                      type="date"
-                      value={end || ""}
-                      min={start || meta?.min || ""}
-                      max={meta?.max || ""}
-                      onChange={(e) => setEnd(iso(e.target.value))}
-                      className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
-                    />
-                  </div>
-                </div>
-              </div>
             </div>
 
-            {/* Ultra-Compact Main Content Layout */}
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-8 gap-0.5 min-h-0">
-              {/* Left Side - Compact KPI Cards */}
-              <div className="lg:col-span-1 space-y-2">
-                {/* Total Tweets Card */}
-                <div className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-3 border border-slate-600/30 shadow-md hover:shadow-emerald-500/20 hover:border-emerald-400/40 transition-all duration-500 group cursor-pointer">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="w-6 h-6 bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 rounded-md flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                      <svg className="w-3 h-3 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                      </svg>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-xs font-medium text-slate-400 mb-0">Total Tweets</p>
-                      <p className="text-sm font-bold text-white group-hover:text-emerald-400 transition-colors duration-300">
-                        {displayTotal.toLocaleString()}
-                      </p>
+                {/* Executive Insight Strip */}
+                <div className="mt-3 grid grid-cols-1 lg:grid-cols-3 gap-2">
+                  <div className="bg-slate-800 rounded-xl border border-slate-700 p-3 shadow-sm">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
+                      Executive Snapshot
+                    </p>
+                    <div className="space-y-2">
+                      {/* Walmart Section */}
+                      <div className="border-b border-slate-700 pb-2">
+                        <p className="text-xs font-semibold text-slate-200 mb-1">Walmart</p>
+                        <p className="text-xs text-slate-100 mb-1">
+                          {(summary?.total || 0).toLocaleString()} tweets analyzed
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          Positive:{" "}
+                          <span className="text-emerald-600 font-semibold">
+                            {summary?.percent?.positive ? summary.percent.positive.toFixed(2) : "0.00"}%
+                          </span>{" "}
+                          · Neutral:{" "}
+                          <span className="text-yellow-500 font-semibold">
+                            {summary?.percent?.neutral ? summary.percent.neutral.toFixed(2) : "0.00"}%
+                          </span>{" "}
+                          · Negative:{" "}
+                          <span className="text-red-500 font-semibold">
+                            {summary?.percent?.negative ? summary.percent.negative.toFixed(2) : "0.00"}%
+                          </span>
+                        </p>
+                      </div>
+                      {/* Costco Section */}
+                      <div>
+                        <p className="text-xs font-semibold text-slate-200 mb-1">Costco</p>
+                        <p className="text-xs text-slate-100 mb-1">
+                          {(competitorSummary?.total || 0).toLocaleString()} tweets analyzed
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          Positive:{" "}
+                          <span className="text-emerald-600 font-semibold">
+                            {competitorSummary?.percent?.positive ? competitorSummary.percent.positive.toFixed(2) : "0.00"}%
+                          </span>{" "}
+                          · Neutral:{" "}
+                          <span className="text-yellow-500 font-semibold">
+                            {competitorSummary?.percent?.neutral ? competitorSummary.percent.neutral.toFixed(2) : "0.00"}%
+                          </span>{" "}
+                          · Negative:{" "}
+                          <span className="text-red-500 font-semibold">
+                            {competitorSummary?.percent?.negative ? competitorSummary.percent.negative.toFixed(2) : "0.00"}%
+                          </span>
+                        </p>
+                      </div>
                     </div>
                   </div>
+                  <div className="bg-slate-800 rounded-xl border border-slate-700 p-3 shadow-sm">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
+                      Walmart Aspect Sentiment Breakdown
+                    </p>
+                    {walmartAspectData ? (
+                      <div className="h-40" style={{ position: "relative" }}>
+                        {stackedBarData?.labels?.length > 0 && stackedBarData?.datasets?.length > 0 ? (
+                          <Bar
+                            data={stackedBarData}
+                            options={barChartOptions}
+                            plugins={[ChartDataLabels]}
+                          />
+                        ) : (
+                          <div className="flex items-center justify-center h-full">
+                            <p className="text-xs text-slate-500">No data available</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center h-40">
+                        <div className="flex flex-col items-center space-y-2">
+                          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+                          <p className="text-xs text-slate-500">Loading chart data...</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="bg-slate-800 rounded-xl border border-slate-700 p-3 shadow-sm">
+                    <p className="text-xs font-semibold text-emerald-400 uppercase tracking-wide mb-2">
+                      Costco Aspect Sentiment Breakdown
+                    </p>
+                    {costcoAspectData ? (
+                      <div className="h-40" style={{ position: "relative" }}>
+                        {costcoStackedBarData?.labels?.length > 0 && costcoStackedBarData?.datasets?.length > 0 ? (
+                          <Bar
+                            data={costcoStackedBarData}
+                            options={barChartOptions}
+                            plugins={[ChartDataLabels]}
+                          />
+                        ) : (
+                          <div className="flex items-center justify-center h-full">
+                            <p className="text-xs text-slate-400">No data available</p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center h-40">
+                        <div className="flex flex-col items-center space-y-2">
+                          <div className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+                          <p className="text-xs text-slate-400">Loading chart data...</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                    </div>
                 </div>
 
-                {/* Ultra-Compact Sentiment Cards */}
-                <div className="space-y-2">
-                  {/* Positive */}
-                  <div className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-3 border border-slate-600/30 shadow-md hover:shadow-green-500/20 hover:border-green-400/40 transition-all duration-500 group cursor-pointer">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="w-5 h-5 bg-gradient-to-br from-green-500/20 to-emerald-500/20 rounded flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                        <svg className="w-2.5 h-2.5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs font-medium text-slate-400 mb-0">Positive</p>
-                        <p className="text-xs font-bold text-white group-hover:text-green-400 transition-colors duration-300">
-                          {displayCounts.positive ?? 0} ({displayPct.positive ?? 0}%)
-                        </p>
-                      </div>
-                    </div>
-                    <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
-                      <div
-                        className="bg-gradient-to-r from-green-500 to-emerald-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${displayPct.positive ?? 0}%` }}
-                      ></div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500">Sentiment</span>
-                      <div className="flex items-center space-x-1">
-                        <div className="w-0.5 h-0.5 bg-green-400 rounded-full animate-pulse"></div>
-                        <span className="text-xs text-green-400 font-medium">Good</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => loadAspectSplit("positive")}
-                      disabled={loadingAspectSplit}
-                      className="w-full mt-2 px-2 py-1 bg-green-500/20 hover:bg-green-500/30 text-green-400 text-xs font-medium rounded border border-green-500/30 hover:border-green-500/50 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loadingAspectSplit ? "Loading..." : "View Aspects"}
-                    </button>
-                  </div>
-
-                  {/* Neutral */}
-                  <div className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-3 border border-slate-600/30 shadow-md hover:shadow-yellow-500/20 hover:border-yellow-400/40 transition-all duration-500 group cursor-pointer">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="w-5 h-5 bg-gradient-to-br from-yellow-500/20 to-amber-500/20 rounded flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                        <svg className="w-2.5 h-2.5 text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs font-medium text-slate-400 mb-0">Neutral</p>
-                        <p className="text-xs font-bold text-white group-hover:text-yellow-400 transition-colors duration-300">
-                          {displayCounts.neutral ?? 0} ({displayPct.neutral ?? 0}%)
-                        </p>
-                      </div>
-                    </div>
-                    <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
-                      <div
-                        className="bg-gradient-to-r from-yellow-500 to-amber-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${displayPct.neutral ?? 0}%` }}
-                      ></div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500">Sentiment</span>
-                      <div className="flex items-center space-x-1">
-                        <div className="w-0.5 h-0.5 bg-yellow-400 rounded-full animate-pulse"></div>
-                        <span className="text-xs text-yellow-400 font-medium">Neutral</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => loadAspectSplit("neutral")}
-                      disabled={loadingAspectSplit}
-                      className="w-full mt-2 px-2 py-1 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 text-xs font-medium rounded border border-yellow-500/30 hover:border-yellow-500/50 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loadingAspectSplit ? "Loading..." : "View Aspects"}
-                    </button>
-                  </div>
-
-                  {/* Negative */}
-                  <div className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-3 border border-slate-600/30 shadow-md hover:shadow-red-500/20 hover:border-red-400/40 transition-all duration-500 group cursor-pointer">
-                    <div className="flex items-center justify-between mb-1">
-                      <div className="w-5 h-5 bg-gradient-to-br from-red-500/20 to-pink-500/20 rounded flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                        <svg className="w-2.5 h-2.5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.172 16.172a4 4 0 015.656 0M9 12h.01M15 12h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs font-medium text-slate-400 mb-0">Negative</p>
-                        <p className="text-xs font-bold text-white group-hover:text-red-400 transition-colors duration-300">
-                          {displayCounts.negative ?? 0} ({displayPct.negative ?? 0}%)
-                        </p>
-                      </div>
-                    </div>
-                    <div className="w-full bg-slate-700/50 rounded-full h-0.5 mb-1">
-                      <div
-                        className="bg-gradient-to-r from-red-500 to-pink-500 h-0.5 rounded-full transition-all duration-500"
-                        style={{ width: `${displayPct.negative ?? 0}%` }}
-                      ></div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-500">Sentiment</span>
-                      <div className="flex items-center space-x-1">
-                        <div className="w-0.5 h-0.5 bg-red-400 rounded-full animate-pulse"></div>
-                        <span className="text-xs text-red-400 font-medium">Alert</span>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => loadAspectSplit("negative")}
-                      disabled={loadingAspectSplit}
-                      className="w-full mt-2 px-2 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 text-xs font-medium rounded border border-red-500/30 hover:border-red-500/50 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {loadingAspectSplit ? "Loading..." : "View Aspects"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
+            {/* Main Analytics Row: Aspect Panel + Trend Chart + Date Drill-down */}
+            <div className="flex-1 flex flex-row gap-3 min-h-0">
               {/* Middle Side - Aspect Breakdown Card */}
               {aspectSplitModal.isOpen && (
-                <div className="lg:col-span-2 flex flex-col min-h-0">
+                <div className="w-[280px] flex flex-col min-h-0 flex-shrink-0">
                   <div
-                    className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-4 border border-slate-600/30 shadow-md flex flex-col min-h-0"
-                    style={{ height: "calc(100vh - 180px)" }}
+                    className="bg-slate-800 rounded-md p-4 border border-slate-700 shadow-sm flex flex-col min-h-0"
+                    style={{ height: "320px" }}
                   >
                     <div className="flex items-center justify-between mb-4 flex-shrink-0">
                       <div className="flex items-center space-x-2">
@@ -1011,16 +1185,12 @@ export default function Dashboard() {
               )}
 
               {/* Chart and Date Aspect Sidebar Container */}
-              <div
-                className={`flex flex-row min-h-0 gap-2 ${
-                  aspectSplitModal.isOpen ? "lg:col-span-5" : selectedDateModal.isOpen ? "lg:col-span-6" : "lg:col-span-7"
-                }`}
-              >
+              <div className="flex flex-row min-h-0 gap-2 flex-1">
                 {/* Chart Section */}
                 <div className={`flex flex-col min-h-0 ${selectedDateModal.isOpen ? "flex-1" : "w-full"}`}>
                   <div
-                    className="bg-gradient-to-br from-slate-800/60 to-slate-700/60 backdrop-blur-sm rounded-md p-1 border border-slate-600/30 shadow-md flex flex-col min-h-0"
-                    style={{ height: "calc(100vh - 180px)" }}
+                    className="bg-slate-800 rounded-md p-1 border border-slate-700 shadow-sm flex flex-col min-h-0"
+                    style={{ height: "480px" }}
                   >
                     <div className="flex items-center justify-between mb-1 flex-shrink-0">
                       <div className="flex items-center space-x-2">
@@ -1036,17 +1206,30 @@ export default function Dashboard() {
                         </div>
                         <div>
                           <h2 className="text-sm font-bold text-white">Sentiment Trend</h2>
-                          <p className="text-slate-400 text-xs">Track sentiment changes</p>
                         </div>
                       </div>
 
                       <div className="flex items-center space-x-2">
-                        <div className="flex items-center space-x-1 bg-slate-700/30 backdrop-blur-sm rounded-md border border-slate-600/50 px-2 py-1">
-                          <span className="text-xs text-slate-200 font-medium">View:</span>
+                        {/* Brand Selector */}
+                        <div className="flex items-center space-x-1 bg-slate-700 rounded-md border border-slate-600 px-2 py-1 shadow-sm">
+                          <span className="text-xs text-slate-300 font-medium">Brand:</span>
+                          <select
+                            value={selectedBrand}
+                            onChange={(e) => setSelectedBrand(e.target.value)}
+                            className="px-1 py-0.5 bg-slate-700 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                          >
+                            <option value="walmart">Walmart</option>
+                            <option value="costco">Costco</option>
+                            <option value="all">All</option>
+                          </select>
+                        </div>
+                        {/* View Selector */}
+                        <div className="flex items-center space-x-1 bg-slate-700 rounded-md border border-slate-600 px-2 py-1 shadow-sm">
+                          <span className="text-xs text-slate-300 font-medium">View:</span>
                           <select
                             value={timePeriod}
                             onChange={(e) => setTimePeriod(e.target.value)}
-                            className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                            className="px-1 py-0.5 bg-slate-700 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
                           >
                             <option value="daily">Daily</option>
                             <option value="weekly">Weekly</option>
@@ -1234,7 +1417,10 @@ export default function Dashboard() {
                                 <div className="flex items-center justify-between mb-2">
                                   <div className="flex items-center space-x-2">
                                     <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+                                    <div>
                                     <span className="text-sm font-semibold text-green-400">Positive</span>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">Drivers of favorable sentiment</p>
+                                    </div>
                                   </div>
                                   <span className="text-sm font-bold text-white">
                                     {selectedDateModal.data.sentimentBreakdown?.positive?.total || 0}
@@ -1271,7 +1457,10 @@ export default function Dashboard() {
                                 <div className="flex items-center justify-between mb-2">
                                   <div className="flex items-center space-x-2">
                                     <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
+                                    <div>
                                     <span className="text-sm font-semibold text-yellow-400">Neutral</span>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">Informational or mixed mentions</p>
+                                    </div>
                                   </div>
                                   <span className="text-sm font-bold text-white">
                                     {selectedDateModal.data.sentimentBreakdown?.neutral?.total || 0}
@@ -1308,7 +1497,10 @@ export default function Dashboard() {
                                 <div className="flex items-center justify-between mb-2">
                                   <div className="flex items-center space-x-2">
                                     <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                                    <div>
                                     <span className="text-sm font-semibold text-red-400">Negative</span>
+                                      <p className="text-[10px] text-slate-400 mt-0.5">Risk signals and complaints</p>
+                                    </div>
                                   </div>
                                   <span className="text-sm font-bold text-white">
                                     {selectedDateModal.data.sentimentBreakdown?.negative?.total || 0}

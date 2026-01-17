@@ -3,7 +3,6 @@ import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import { DateProvider } from "./contexts/DateContext";
 import Navigation from "./components/Navigation";
 import Dashboard from "./pages/Dashboard";
-import AspectAnalysis from "./pages/AspectAnalysis";
 import ThemeAnalysis from "./pages/ThemeAnalysis";
 import AIInsights from "./pages/AIInsights";
 
@@ -18,13 +17,9 @@ export default function App() {
         <div className="min-h-screen bg-slate-900 text-white">
           <Navigation />
 
-          <main className="ml-64">
+          <main className="ml-48">
             <Routes>
               <Route path="/" element={<Dashboard />} />
-              <Route
-                path="/aspect-analysis"
-                element={<AspectAnalysis />}
-              />
               <Route
                 path="/theme-analysis"
                 element={<ThemeAnalysis />}

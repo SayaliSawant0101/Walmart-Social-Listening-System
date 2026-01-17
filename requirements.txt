@@ -4,6 +4,7 @@ uvicorn[standard]
 pandas
 pyarrow
 boto3
+s3fs
 python-dotenv
 requests
 scikit-learn==1.5.2

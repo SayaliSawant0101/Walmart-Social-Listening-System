@@ -17,23 +17,35 @@ export function DateProvider({ children }) {
         console.log('Loading metadata from API...');
         const mr = await getMeta();
         console.log('Metadata loaded:', mr);
-        setMeta(mr);
-        // Default to all days of August 2025 (Aug 1-31)
-        const defaultStart = "2025-08-01";
-        const defaultEnd = "2025-08-31";
-        // Set to Aug 1-31 if data supports it, otherwise use available range
-        const finalStart = mr?.min && mr.min <= "2025-08-01" ? defaultStart : (mr?.min || defaultStart);
-        const finalEnd = mr?.max && mr.max >= "2025-08-31" ? defaultEnd : (mr?.max || defaultEnd);
-        setStart(finalStart);
-        setEnd(finalEnd);
-        console.log('Date range set:', finalStart, 'to', finalEnd);
+        
+        // Use the full available date range from the API
+        const finalStart = mr?.date_range?.min || mr?.min || null;
+        const finalEnd = mr?.date_range?.max || mr?.max || null;
+        
+        // Set meta with min/max for date input constraints
+        setMeta({
+          ...mr,
+          min: finalStart,
+          max: finalEnd
+        });
+        
+        if (finalStart && finalEnd) {
+          setStart(finalStart);
+          setEnd(finalEnd);
+          console.log('Date range set to full range:', finalStart, 'to', finalEnd);
+        } else {
+          // Fallback if date range not available
+          console.warn('Date range not available from API, using fallback');
+          setStart("2025-08-01");
+          setEnd("2025-08-31");
+        }
       } catch (error) {
         console.error("Failed to load metadata:", error);
         console.error("Error details:", error.response?.data || error.message);
-        // Set fallback data if API fails - all days of August 2025
-        setMeta({ min: "2025-08-01", max: "2025-08-31" });
-        setStart("2025-08-01");
-        setEnd("2025-08-31");
+        // Set fallback - will be updated when API responds
+        setMeta({ min: null, max: null });
+        setStart("");
+        setEnd("");
       } finally {
         setLoading(false);
       }
@@ -41,12 +53,9 @@ export function DateProvider({ children }) {
 
     // Add timeout to prevent hanging
     const timeoutId = setTimeout(() => {
-      console.log('Metadata loading timeout - using fallback');
-      setMeta({ min: "2025-08-01", max: "2025-08-31" });
-      setStart("2025-08-01");
-      setEnd("2025-08-31");
+      console.log('Metadata loading timeout - will retry when API is ready');
       setLoading(false);
-    }, 5000);
+    }, 10000); // Increased timeout to 10s to allow for S3 loading
 
     loadMeta();
 

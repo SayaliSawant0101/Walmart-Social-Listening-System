@@ -24,7 +24,7 @@ console.log("[api] MODE:", import.meta.env.MODE);
 console.log("[api] VITE_API_BASE_URL:", import.meta.env.VITE_API_BASE_URL);
 console.log("[api] BASE_URL:", BASE_URL);
 
-const API = axios.create({ baseURL: BASE_URL, timeout: 15000 });
+const API = axios.create({ baseURL: BASE_URL, timeout: 120000 }); // 2 minutes for S3 reads
 const LONG_API = axios.create({ baseURL: BASE_URL, timeout: 600000 });
 
 // --- Meta ---

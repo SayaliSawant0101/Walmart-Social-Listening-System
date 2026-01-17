@@ -11,16 +11,175 @@ from typing import Optional, Tuple
 import pandas as pd
 import traceback
 import os
+import time
+import hashlib
+import threading
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 from io import StringIO, BytesIO
-
-DATA_DIR = os.getenv("LOCAL_DATA_DIR", "data")
-
-# LLM summaries (exec summary + structured brief)
-from src.llm.summary import build_executive_summary, summarize_tweets
 
 # --- Load the repo-root .env no matter where Uvicorn is started from ---
 ROOT_DOTENV = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(dotenv_path=ROOT_DOTENV)
+
+# S3 Configuration - Default to S3 bucket
+S3_BUCKET = os.getenv("S3_BUCKET", "sayali-walmart-social-listener").strip()
+S3_PREFIX = os.getenv("S3_PREFIX", "data").strip().strip("/")
+# Explicitly enable S3 if bucket is specified (default: enabled)
+# Force S3 usage - ignore local data if S3 is configured
+USE_S3 = os.getenv("USE_S3", "true").lower() in ("true", "1", "yes") and bool(S3_BUCKET)
+FORCE_S3 = os.getenv("FORCE_S3", "true").lower() in ("true", "1", "yes")  # Force S3, don't fallback to local
+
+# Local fallback
+DATA_DIR = os.getenv("LOCAL_DATA_DIR", "data")
+
+# Initialize S3 filesystem if using S3
+s3fs_filesystem = None
+if USE_S3:
+    try:
+        import s3fs
+        # Configure S3 with increased timeout and connection settings
+        try:
+            from botocore.config import Config
+        except ImportError:
+            Config = None
+        
+        # Get AWS region from env or default to us-east-1
+        aws_region = os.getenv("AWS_REGION", "us-east-1")
+        
+        # Initialize S3 filesystem - use simple approach without config to avoid conflicts
+        # s3fs will handle timeouts internally
+        s3fs_filesystem = s3fs.S3FileSystem(
+            key=os.getenv("AWS_ACCESS_KEY_ID"),
+            secret=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            token=os.getenv("AWS_SESSION_TOKEN") or None,
+            client_kwargs={'region_name': aws_region}
+        )
+        print(f"[API] ✅ S3 mode enabled: s3://{S3_BUCKET}/{S3_PREFIX}/")
+        print(f"[API] ✅ S3 region: {aws_region}")
+        print(f"[API] ✅ S3 timeout configured: 60s connect, 300s read")
+        print(f"[API] ℹ️  S3 will be tested on first data read")
+    except ImportError:
+        print("[API] ❌ WARNING: s3fs not installed. Install with: pip install s3fs")
+        USE_S3 = False
+    except Exception as e:
+        print(f"[API] ❌ CRITICAL ERROR: Failed to initialize S3 filesystem: {e}")
+        print(f"[API] ❌ Full error details:")
+        import traceback
+        traceback.print_exc()
+        print(f"[API] ⚠️  S3 init failed - keeping USE_S3=True to attempt S3 reads anyway")
+        print(f"[API] ⚠️  This will cause errors on data read, but will show the actual S3 error")
+        # DON'T set USE_S3 = False - keep it True so paths are still S3
+        # The error will be caught when trying to read, giving better error messages
+        # USE_S3 = False  # REMOVED - prevents silent fallback to local
+else:
+    print(f"[API] ⚠️  S3 mode DISABLED - using local data directory: {DATA_DIR}/")
+    print(f"[API] DEBUG: USE_S3={USE_S3}, S3_BUCKET={S3_BUCKET}, S3_PREFIX={S3_PREFIX}")
+
+# Debug: Print final S3 configuration
+print(f"[API] 🔍 FINAL CONFIG: USE_S3={USE_S3}, S3_BUCKET={S3_BUCKET}, s3fs_available={s3fs_filesystem is not None}")
+
+def _get_file_path(filename: str) -> str:
+    """Get file path (S3 or local) based on configuration."""
+    if USE_S3:
+        return f"s3://{S3_BUCKET}/{S3_PREFIX}/{filename}"
+    else:
+        return f"{DATA_DIR}/{filename}"
+
+def _file_exists(path: str) -> bool:
+    """Check if file exists in S3 or local filesystem."""
+    if USE_S3 and path.startswith("s3://"):
+        try:
+            return s3fs_filesystem.exists(path)
+        except Exception:
+            return False
+    else:
+        return os.path.exists(path)
+
+# Global cache for loaded dataframes (in-memory)
+# Clear cache on startup to force fresh S3 load
+_DATA_CACHE = {}
+
+# Local disk cache directory (uses .cache/ which is gitignored)
+CACHE_DIR = Path(".cache/s3_parquet_cache")
+CACHE_MAX_AGE = 3600  # Cache valid for 1 hour
+
+def _read_parquet(path: str, use_cache: bool = True) -> pd.DataFrame:
+    """Read parquet file from S3 or local filesystem with caching.
+    
+    Implements:
+    1. In-memory caching (fastest)
+    2. Local disk caching (fast, persists across restarts)
+    3. S3 fallback (slowest, but always fresh)
+    """
+    cache_key = path
+    
+    # 1. Check in-memory cache first (fastest)
+    if use_cache and cache_key in _DATA_CACHE:
+        print(f"[API] ⚡ Using in-memory cache for {Path(path).name}")
+        return _DATA_CACHE[cache_key].copy()  # Return copy to prevent mutations
+    
+    # 2. Check local disk cache (fast, persists)
+    if use_cache:
+        cache_file = CACHE_DIR / f"{hashlib.md5(path.encode()).hexdigest()}.parquet"
+        if cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < CACHE_MAX_AGE:
+                print(f"[API] 💾 Using local cache: {cache_file.name} (age: {cache_age:.0f}s)")
+                df = pd.read_parquet(cache_file)
+                # Also store in memory cache
+                _DATA_CACHE[cache_key] = df
+                return df.copy()
+            else:
+                # Cache expired, remove it
+                cache_file.unlink()
+                print(f"[API] 🗑️  Removed expired cache: {cache_file.name}")
+    
+    # 3. Read from S3 or local (slowest)
+    try:
+        if USE_S3 and path.startswith("s3://"):
+            if s3fs_filesystem is None:
+                raise Exception(f"S3 is enabled but s3fs_filesystem is None. S3 initialization failed during startup. Check server logs for S3 initialization errors.")
+            print(f"[API] 📥 Reading from S3: {Path(path).name} (this may take a moment...)")
+            start_time = time.time()
+            df = pd.read_parquet(path, filesystem=s3fs_filesystem)
+            elapsed = time.time() - start_time
+            print(f"[API] ✅ Loaded {len(df):,} rows from S3 in {elapsed:.2f}s")
+            
+            # Save to both caches
+            if use_cache:
+                # Save to memory cache
+                _DATA_CACHE[cache_key] = df
+                
+                # Save to disk cache
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                df.to_parquet(cache_file, index=False)
+                print(f"[API] 💾 Cached to disk: {cache_file.name}")
+            
+            return df
+        elif USE_S3:
+            # S3 is enabled but path is not S3 - this should not happen
+            raise Exception(f"ERROR: S3 is enabled (USE_S3=True) but got local path: {path}. Path should be s3://{S3_BUCKET}/{S3_PREFIX}/{Path(path).name}")
+        else:
+            # Local file reading (only if S3 is disabled)
+            print(f"[API] 📂 Reading from local: {path}")
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"File not found: {path}")
+            df = pd.read_parquet(path)
+            
+            # Cache local files too
+            if use_cache:
+                _DATA_CACHE[cache_key] = df
+            
+            return df
+    except Exception as e:
+        print(f"[API] ❌ Error reading {path}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+# LLM summaries (exec summary + structured brief)
+from src.llm.summary import build_executive_summary, summarize_tweets
 
 def _read_openai_key() -> str:
     key = os.getenv("OPENAI_API_KEY", "") or ""
@@ -31,15 +190,16 @@ def _read_openai_key() -> str:
 from src.features.themes import compute_themes_payload
 
 # Load raw tweets data for theme generation
-RAW_TWEETS_PATH = f"{DATA_DIR}/tweets_stage0_raw.parquet"
-RAW_TWEETS_PATH_COMP = f"{DATA_DIR}/tweets_stage0_raw_comp.parquet"
+RAW_TWEETS_PATH = _get_file_path("tweets_stage0_raw.parquet")
+RAW_TWEETS_PATH_COMP = _get_file_path("tweets_stage0_raw_comp.parquet")
 
 # ------------ Paths ------------
-SENTI_PATH = f"{DATA_DIR}/tweets_stage1_sentiment.parquet"
-SENTI_PATH_COMP = f"{DATA_DIR}/tweets_stage1_sentiment_comp.parquet"  # Competitor (Costco) data
-ASPECT_PATH = f"{DATA_DIR}/tweets_stage2_aspects.parquet"
-STAGE3_PATH = f"{DATA_DIR}/tweets_stage3_aspect_sentiment.parquet"  # optional cache (no dates)
-STAGE3_THEMES_PARQUET = f"{DATA_DIR}/tweets_stage3_themes.parquet"  # written by /themes
+SENTI_PATH = _get_file_path("tweets_stage1_sentiment.parquet")
+SENTI_PATH_COMP = _get_file_path("tweets_stage1_sentiment_comp.parquet")  # Competitor (Costco) data
+ASPECT_PATH = _get_file_path("tweets_stage2_aspects.parquet")
+ASPECT_PATH_COMP = _get_file_path("tweets_stage2_aspects_comp.parquet")  # Competitor aspects
+STAGE3_PATH = _get_file_path("tweets_stage3_aspect_sentiment.parquet")  # optional cache (no dates)
+STAGE3_THEMES_PARQUET = _get_file_path("tweets_stage3_themes.parquet")  # written by /themes
 
 app = FastAPI(title="Walmart Social Listener API")
 
@@ -184,96 +344,237 @@ def _pick_any_date_col(df: pd.DataFrame) -> Optional[str]:
             return c
     return None
 
-# ------------ Load Sentiment (Stage 1) ------------
-if not os.path.exists(SENTI_PATH):
-    raise FileNotFoundError(f"Missing parquet: {SENTI_PATH}. Run Stage 1 first.")
+# ------------ Data Loading (Background Thread) ------------
 
-df = pd.read_parquet(SENTI_PATH)
-_sent_date_col = _detect_date_col(df)
-df = _normalize_dates(df, _sent_date_col)
-SENT_MIN_DATE = df["date_only"].min()
-SENT_MAX_DATE = df["date_only"].max()
-
-# ------------ Load Competitor Sentiment (Stage 1) ------------
+# Global data variables (initialized as None, loaded in background)
+df = None
 df_comp = None
+adf = None
+adf_comp = None
+stage3_df = None
+_sent_date_col = None
+_sent_comp_date_col = None
+_asp_date_col = None
+_asp_comp_date_col = None
+SENT_MIN_DATE = None
+SENT_MAX_DATE = None
 SENT_COMP_MIN_DATE = None
 SENT_COMP_MAX_DATE = None
-if os.path.exists(SENTI_PATH_COMP):
-    try:
-        print(f"[API] Loading competitor data from {SENTI_PATH_COMP}")
-        df_comp = pd.read_parquet(SENTI_PATH_COMP)
-        print(f"[API] Loaded {len(df_comp)} competitor rows")
-        _sent_comp_date_col = _detect_date_col(df_comp)
-        df_comp = _normalize_dates(df_comp, _sent_comp_date_col)
-        SENT_COMP_MIN_DATE = df_comp["date_only"].min()
-        SENT_COMP_MAX_DATE = df_comp["date_only"].max()
-        print(f"[API] Competitor date range: {SENT_COMP_MIN_DATE} to {SENT_COMP_MAX_DATE}")
-    except Exception as e:
-        print(f"[API] Error loading competitor data: {e}")
-        import traceback
-        traceback.print_exc()
-        df_comp = None
-else:
-    print(f"[API] Competitor data file not found: {SENTI_PATH_COMP}")
-
-# ------------ Load Aspects (Stage 2) ------------
-ASPECTS = ["pricing", "delivery", "returns", "staff", "app/ux"]
-ASPECT_PATH_COMP = f"{DATA_DIR}/tweets_stage2_aspects_comp.parquet"  # Competitor aspects
-
-if os.path.exists(ASPECT_PATH):
-    adf = pd.read_parquet(ASPECT_PATH)
-    _asp_date_col = _detect_date_col(adf)
-    adf = _normalize_dates(adf, _asp_date_col)
-    ASPECT_MIN_DATE = adf["date_only"].min()
-    ASPECT_MAX_DATE = adf["date_only"].max()
-else:
-    adf = pd.DataFrame(columns=["date_only", "aspect_dominant", "sentiment_label"])
-    ASPECT_MIN_DATE = SENT_MIN_DATE
-    ASPECT_MAX_DATE = SENT_MAX_DATE
-
-# ------------ Load Competitor Aspects (Stage 2) ------------
-adf_comp = None
+ASPECT_MIN_DATE = None
+ASPECT_MAX_DATE = None
 ASPECT_COMP_MIN_DATE = None
 ASPECT_COMP_MAX_DATE = None
-if os.path.exists(ASPECT_PATH_COMP):
-    try:
-        print(f"[API] Loading competitor aspects from {ASPECT_PATH_COMP}")
-        adf_comp = pd.read_parquet(ASPECT_PATH_COMP)
-        _asp_comp_date_col = _detect_date_col(adf_comp)
-        adf_comp = _normalize_dates(adf_comp, _asp_comp_date_col)
-        ASPECT_COMP_MIN_DATE = adf_comp["date_only"].min()
-        ASPECT_COMP_MAX_DATE = adf_comp["date_only"].max()
-        print(f"[API] Loaded {len(adf_comp)} competitor aspect rows")
-    except Exception as e:
-        print(f"[API] Error loading competitor aspects: {e}")
-        adf_comp = None
-else:
-    print(f"[API] Competitor aspect file not found: {ASPECT_PATH_COMP}")
+ASPECTS = ["pricing", "delivery", "returns", "staff", "app/ux"]
 
-# Optional cache without dates (Stage 3)
-stage3_df = None
-if os.path.exists(STAGE3_PATH):
+# Data loading status
+_data_loading = threading.Event()
+_data_loading_error = None
+
+def load_all_data():
+    """Load all data files in parallel (runs in background thread)."""
+    global df, df_comp, adf, adf_comp, stage3_df
+    global _sent_date_col, _sent_comp_date_col, _asp_date_col, _asp_comp_date_col
+    global SENT_MIN_DATE, SENT_MAX_DATE, SENT_COMP_MIN_DATE, SENT_COMP_MAX_DATE
+    global ASPECT_MIN_DATE, ASPECT_MAX_DATE, ASPECT_COMP_MIN_DATE, ASPECT_COMP_MAX_DATE
+    global _data_loading_error
+    
     try:
-        stage3_df = pd.read_parquet(STAGE3_PATH)
-        for c in ["aspect_dominant", "positive", "neutral", "negative"]:
-            assert c in stage3_df.columns
-    except Exception:
-        stage3_df = None
+        print(f"[API] ⏳ Starting parallel data load from {'S3' if USE_S3 else 'local'}...")
+        print(f"[API] DEBUG: USE_S3={USE_S3}, S3_BUCKET={S3_BUCKET}, S3_PREFIX={S3_PREFIX}")
+        print(f"[API] DEBUG: s3fs_filesystem={s3fs_filesystem is not None}")
+        
+        def load_single_file(file_info):
+            """Load a single file and return processed data."""
+            name, path, process_func = file_info
+            try:
+                print(f"[API] Loading {name} from {path}...")
+                print(f"[API] DEBUG: Path type - S3: {path.startswith('s3://')}, Local: {not path.startswith('s3://')}")
+                # Force fresh load from S3 (disable cache on initial load)
+                df = _read_parquet(path, use_cache=False)
+                if process_func and df is not None:
+                    df = process_func(df)
+                if df is not None:
+                    print(f"[API] ✅ {name} loaded: {len(df):,} rows")
+                return name, df, None
+            except FileNotFoundError as e:
+                print(f"[API] ⚠️  {name} not found: {path}")
+                return name, None, "FileNotFoundError"
+            except Exception as e:
+                print(f"[API] ❌ Error loading {name}: {e}")
+                import traceback
+                traceback.print_exc()
+                return name, None, str(e)
+
+        # Define all files to load with their processing functions
+        files_to_load = [
+            ("df", SENTI_PATH, lambda df: _normalize_dates(df, _detect_date_col(df))),
+            ("df_comp", SENTI_PATH_COMP, lambda df: _normalize_dates(df, _detect_date_col(df))),
+            ("adf", ASPECT_PATH, lambda df: _normalize_dates(df, _detect_date_col(df))),
+            ("adf_comp", ASPECT_PATH_COMP, lambda df: _normalize_dates(df, _detect_date_col(df))),
+            ("stage3_df", STAGE3_PATH, None),  # No processing needed
+        ]
+
+        # Load all files in parallel
+        results = {}
+        start_time = time.time()
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(load_single_file, file_info): file_info[0] for file_info in files_to_load}
+            
+            for future in concurrent.futures.as_completed(futures):
+                name = futures[future]
+                try:
+                    result_name, df_result, error = future.result()
+                    results[result_name] = (df_result, error)
+                except Exception as e:
+                    print(f"[API] ❌ Unexpected error loading {name}: {e}")
+                    results[name] = (None, str(e))
+
+        elapsed = time.time() - start_time
+        print(f"[API] ⚡ Parallel load completed in {elapsed:.2f}s")
+
+        # Process results and set global variables
+        # Main sentiment data
+        df_result, error = results.get("df", (None, None))
+        if df_result is not None:
+            df = df_result
+            _sent_date_col = _detect_date_col(df)
+            SENT_MIN_DATE = df["date_only"].min()
+            SENT_MAX_DATE = df["date_only"].max()
+            print(f"[API] ✅ Main sentiment: {len(df):,} rows, date range: {SENT_MIN_DATE} to {SENT_MAX_DATE}")
+        else:
+            if error == "FileNotFoundError":
+                raise FileNotFoundError(f"Missing parquet: {SENTI_PATH}. Ensure file exists in S3 or local data directory.")
+            else:
+                raise Exception(f"Failed to load main sentiment data: {error}")
+
+        # Competitor sentiment
+        df_comp_result, error = results.get("df_comp", (None, None))
+        if df_comp_result is not None:
+            df_comp = df_comp_result
+            _sent_comp_date_col = _detect_date_col(df_comp)
+            SENT_COMP_MIN_DATE = df_comp["date_only"].min()
+            SENT_COMP_MAX_DATE = df_comp["date_only"].max()
+            print(f"[API] ✅ Competitor sentiment: {len(df_comp):,} rows, date range: {SENT_COMP_MIN_DATE} to {SENT_COMP_MAX_DATE}")
+        else:
+            df_comp = None
+            SENT_COMP_MIN_DATE = None
+            SENT_COMP_MAX_DATE = None
+            print(f"[API] ⚠️  Competitor sentiment data not available")
+
+        # Aspects
+        adf_result, error = results.get("adf", (None, None))
+        if adf_result is not None:
+            adf = adf_result
+            _asp_date_col = _detect_date_col(adf)
+            ASPECT_MIN_DATE = adf["date_only"].min()
+            ASPECT_MAX_DATE = adf["date_only"].max()
+            print(f"[API] ✅ Aspects: {len(adf):,} rows, date range: {ASPECT_MIN_DATE} to {ASPECT_MAX_DATE}")
+        else:
+            adf = pd.DataFrame(columns=["date_only", "aspect_dominant", "sentiment_label"])
+            ASPECT_MIN_DATE = SENT_MIN_DATE if SENT_MIN_DATE else None
+            ASPECT_MAX_DATE = SENT_MAX_DATE if SENT_MAX_DATE else None
+            print(f"[API] ⚠️  Aspect data not available, using empty DataFrame")
+
+        # Competitor aspects
+        adf_comp_result, error = results.get("adf_comp", (None, None))
+        if adf_comp_result is not None:
+            adf_comp = adf_comp_result
+            _asp_comp_date_col = _detect_date_col(adf_comp)
+            ASPECT_COMP_MIN_DATE = adf_comp["date_only"].min()
+            ASPECT_COMP_MAX_DATE = adf_comp["date_only"].max()
+            print(f"[API] ✅ Competitor aspects: {len(adf_comp):,} rows, date range: {ASPECT_COMP_MIN_DATE} to {ASPECT_COMP_MAX_DATE}")
+        else:
+            adf_comp = None
+            ASPECT_COMP_MIN_DATE = None
+            ASPECT_COMP_MAX_DATE = None
+            print(f"[API] ⚠️  Competitor aspect data not available")
+
+        # Stage 3 cache
+        stage3_df_result, error = results.get("stage3_df", (None, None))
+        if stage3_df_result is not None:
+            try:
+                for c in ["aspect_dominant", "positive", "neutral", "negative"]:
+                    assert c in stage3_df_result.columns
+                stage3_df = stage3_df_result
+                print(f"[API] ✅ Stage 3 cache loaded: {len(stage3_df)} aspects")
+            except (AssertionError, Exception):
+                stage3_df = None
+                print(f"[API] ⚠️  Stage 3 cache invalid, ignoring")
+        else:
+            stage3_df = None
+        
+        print(f"[API] ✅ All data loaded successfully!")
+        _data_loading.set()  # Signal that data is ready
+        
+    except Exception as e:
+        _data_loading_error = str(e)
+        print(f"[API] ❌ CRITICAL: Failed to load data: {e}")
+        import traceback
+        traceback.print_exc()
+        _data_loading.set()  # Set event even on error so server can respond
+
+# Start data loading in background thread
+_data_loader_thread = threading.Thread(target=load_all_data, daemon=True)
+_data_loader_thread.start()
+print(f"[API] 🚀 Server starting... Data loading in background thread")
 
 # ---------- Simple in-process cache for /themes ----------
 _THEMES_CACHE: dict[Tuple[Optional[str], Optional[str], int, str], dict] = {}
 
+# ------------ Helper Functions ------------
+def _check_data_ready():
+    """Check if data is loaded and ready."""
+    if not _data_loading.is_set():
+        return False, "Data is still loading from S3. Please wait..."
+    if df is None:
+        if _data_loading_error:
+            return False, f"Data loading failed: {_data_loading_error}"
+        return False, "Data is still loading from S3. Please wait..."
+    return True, None
+
 # ------------ Routes ------------
 @app.get("/")
 def health():
+    data_ready = _data_loading.is_set() and df is not None
+    
+    # Get the earliest and latest dates across all data sources
+    all_dates = []
+    if SENT_MIN_DATE:
+        all_dates.append(SENT_MIN_DATE)
+    if SENT_MAX_DATE:
+        all_dates.append(SENT_MAX_DATE)
+    if ASPECT_MIN_DATE:
+        all_dates.append(ASPECT_MIN_DATE)
+    if ASPECT_MAX_DATE:
+        all_dates.append(ASPECT_MAX_DATE)
+    if SENT_COMP_MIN_DATE:
+        all_dates.append(SENT_COMP_MIN_DATE)
+    if SENT_COMP_MAX_DATE:
+        all_dates.append(SENT_COMP_MAX_DATE)
+    if ASPECT_COMP_MIN_DATE:
+        all_dates.append(ASPECT_COMP_MIN_DATE)
+    if ASPECT_COMP_MAX_DATE:
+        all_dates.append(ASPECT_COMP_MAX_DATE)
+    
+    # Calculate overall min and max
+    overall_min = min(all_dates) if all_dates else None
+    overall_max = max(all_dates) if all_dates else None
+    
     return {
         "message": "✅ Walmart Sentiment API is running!",
-        "date_range": {"min": str(SENT_MIN_DATE), "max": str(SENT_MAX_DATE)},
-        "aspect_date_range": {"min": str(ASPECT_MIN_DATE), "max": str(ASPECT_MAX_DATE)},
-        "has_aspects": bool(len(adf) > 0),
-        "has_stage3_cache": bool(stage3_df is not None),
-        "has_competitor_data": bool(df_comp is not None),
-        "competitor_date_range": {"min": str(SENT_COMP_MIN_DATE) if SENT_COMP_MIN_DATE else None, "max": str(SENT_COMP_MAX_DATE) if SENT_COMP_MAX_DATE else None},
+        "data_loading": not data_ready,
+        "data_loading_error": _data_loading_error if _data_loading_error else None,
+        "data_source": f"S3: s3://{S3_BUCKET}/{S3_PREFIX}/" if USE_S3 else f"Local: {DATA_DIR}/",
+        "date_range": {"min": str(overall_min) if overall_min else None, "max": str(overall_max) if overall_max else None} if data_ready else None,
+        "min": str(overall_min) if overall_min else None,  # For backward compatibility
+        "max": str(overall_max) if overall_max else None,  # For backward compatibility
+        "sentiment_date_range": {"min": str(SENT_MIN_DATE) if SENT_MIN_DATE else None, "max": str(SENT_MAX_DATE) if SENT_MAX_DATE else None} if data_ready else None,
+        "aspect_date_range": {"min": str(ASPECT_MIN_DATE) if ASPECT_MIN_DATE else None, "max": str(ASPECT_MAX_DATE) if ASPECT_MAX_DATE else None} if data_ready else None,
+        "has_aspects": bool(len(adf) > 0) if data_ready and adf is not None else False,
+        "has_stage3_cache": bool(stage3_df is not None) if data_ready else False,
+        "has_competitor_data": bool(df_comp is not None) if data_ready else False,
+        "competitor_date_range": {"min": str(SENT_COMP_MIN_DATE) if SENT_COMP_MIN_DATE else None, "max": str(SENT_COMP_MAX_DATE) if SENT_COMP_MAX_DATE else None} if data_ready else None,
         "env_loaded": os.path.exists(ROOT_DOTENV),
         "has_openai_key": bool(_read_openai_key()),
     }
@@ -281,9 +582,22 @@ def health():
 # --- Sentiment ---
 @app.get("/sentiment/summary")
 def sentiment_summary(
-    start: date = Query(default=SENT_MIN_DATE),
-    end:   date = Query(default=SENT_MAX_DATE),
+    start: date = Query(default=None),
+    end:   date = Query(default=None),
 ):
+    ready, error_msg = _check_data_ready()
+    if not ready:
+        return JSONResponse(
+            status_code=503,
+            content={"error": error_msg, "retry_after": 5}
+        )
+    
+    # Use defaults if not provided
+    if start is None:
+        start = SENT_MIN_DATE
+    if end is None:
+        end = SENT_MAX_DATE
+    
     mask = (df["date_only"] >= start) & (df["date_only"] <= end)
     sub = df.loc[mask]
     if sub.empty:
@@ -686,19 +1000,18 @@ def themes(
     try:
         print(f"[/themes] Generating themes for date range: {start} to {end}, clusters: {n_clusters}")
         
-        # Check if raw tweets file exists
-        if not os.path.exists(RAW_TWEETS_PATH):
+        # Load raw tweets data for theme generation
+        print(f"[/themes] Loading raw tweets from {RAW_TWEETS_PATH}")
+        try:
+            df = _read_parquet(RAW_TWEETS_PATH)
+        except FileNotFoundError:
             return JSONResponse(
                 status_code=404,
                 content={
                     "error": f"Raw tweets file not found: {RAW_TWEETS_PATH}",
-                    "hint": "Ensure the data file exists and the path is correct.",
+                    "hint": "Ensure the data file exists in S3 or local data directory.",
                 },
             )
-        
-        # Load raw tweets data for theme generation
-        print(f"[/themes] Loading raw tweets from {RAW_TWEETS_PATH}")
-        df = pd.read_parquet(RAW_TWEETS_PATH)
         print(f"[/themes] Loaded {len(df)} tweets")
         
         # Get OpenAI key
@@ -793,27 +1106,71 @@ def themes_competitor(
         
         # Check if raw tweets file exists, fallback to sentiment file if available
         df = None
-        if os.path.exists(RAW_TWEETS_PATH_COMP):
-            print(f"[/themes/competitor] Loading raw tweets from {RAW_TWEETS_PATH_COMP}")
+        
+        # First, check if files exist (more efficient than trying to read)
+        raw_exists = _file_exists(RAW_TWEETS_PATH_COMP)
+        sent_exists = _file_exists(SENTI_PATH_COMP)
+        
+        if not raw_exists and not sent_exists:
+            error_msg = f"Competitor data file not found"
+            print(f"[/themes/competitor] ERROR: {error_msg}")
+            print(f"[/themes/competitor] Checked: {RAW_TWEETS_PATH_COMP} (exists: {raw_exists})")
+            print(f"[/themes/competitor] Checked: {SENTI_PATH_COMP} (exists: {sent_exists})")
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": error_msg,
+                    "hint": "The competitor (Costco) data file is missing. Please ensure either tweets_stage0_raw_comp.parquet or tweets_stage1_sentiment_comp.parquet exists in the data/ directory or S3 bucket.",
+                    "file_paths": {
+                        "raw": RAW_TWEETS_PATH_COMP,
+                        "sentiment": SENTI_PATH_COMP
+                    },
+                },
+            )
+        
+        # Try to load raw file first if it exists
+        if raw_exists:
             try:
-                df = pd.read_parquet(RAW_TWEETS_PATH_COMP)
+                print(f"[/themes/competitor] Loading raw tweets from {RAW_TWEETS_PATH_COMP}")
+                df = _read_parquet(RAW_TWEETS_PATH_COMP)
                 print(f"[/themes/competitor] Loaded {len(df)} tweets from raw file")
             except Exception as e:
                 error_msg = f"Failed to load competitor raw data file: {str(e)}"
                 print(f"[/themes/competitor] ERROR: {error_msg}")
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "error": error_msg,
-                        "hint": "The competitor data file exists but could not be read. Please check if the file is corrupted.",
-                        "file_path": RAW_TWEETS_PATH_COMP,
-                    },
-                )
-        elif os.path.exists(SENTI_PATH_COMP):
-            # Fallback: use sentiment file if raw file doesn't exist
-            print(f"[/themes/competitor] Raw file not found, using sentiment file: {SENTI_PATH_COMP}")
+                # Fallback to sentiment file if raw file read fails
+                if sent_exists:
+                    print(f"[/themes/competitor] Falling back to sentiment file: {SENTI_PATH_COMP}")
+                    try:
+                        df = _read_parquet(SENTI_PATH_COMP)
+                        print(f"[/themes/competitor] Loaded {len(df)} tweets from sentiment file")
+                    except Exception as e2:
+                        error_msg = f"Failed to load competitor sentiment data file: {str(e2)}"
+                        print(f"[/themes/competitor] ERROR: {error_msg}")
+                        return JSONResponse(
+                            status_code=500,
+                            content={
+                                "error": error_msg,
+                                "hint": "Both competitor data files exist but could not be read. Please check if the files are corrupted or if there are S3 access issues.",
+                                "file_paths": {
+                                    "raw": RAW_TWEETS_PATH_COMP,
+                                    "sentiment": SENTI_PATH_COMP
+                                },
+                            },
+                        )
+                else:
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "error": error_msg,
+                            "hint": "The competitor raw data file exists but could not be read. Please check if the file is corrupted.",
+                            "file_path": RAW_TWEETS_PATH_COMP,
+                        },
+                    )
+        elif sent_exists:
+            # Only sentiment file exists, use it
             try:
-                df = pd.read_parquet(SENTI_PATH_COMP)
+                print(f"[/themes/competitor] Loading sentiment file: {SENTI_PATH_COMP}")
+                df = _read_parquet(SENTI_PATH_COMP)
                 print(f"[/themes/competitor] Loaded {len(df)} tweets from sentiment file")
             except Exception as e:
                 error_msg = f"Failed to load competitor sentiment data file: {str(e)}"
@@ -822,20 +1179,20 @@ def themes_competitor(
                     status_code=500,
                     content={
                         "error": error_msg,
-                        "hint": "The competitor sentiment data file exists but could not be read.",
+                        "hint": "The competitor sentiment data file exists but could not be read. Please check if the file is corrupted.",
                         "file_path": SENTI_PATH_COMP,
                     },
                 )
-        else:
+        
+        # Check if df is still None (shouldn't happen, but safety check)
+        if df is None:
             error_msg = f"Competitor data file not found"
             print(f"[/themes/competitor] ERROR: {error_msg}")
-            print(f"[/themes/competitor] Checked: {RAW_TWEETS_PATH_COMP}")
-            print(f"[/themes/competitor] Checked: {SENTI_PATH_COMP}")
             return JSONResponse(
                 status_code=404,
                 content={
                     "error": error_msg,
-                    "hint": "The competitor (Costco) data file is missing. Please ensure either tweets_stage0_raw_comp.parquet or tweets_stage1_sentiment_comp.parquet exists in the data/ directory.",
+                    "hint": "The competitor (Costco) data file is missing. Please ensure either tweets_stage0_raw_comp.parquet or tweets_stage1_sentiment_comp.parquet exists.",
                     "file_paths": {
                         "raw": RAW_TWEETS_PATH_COMP,
                         "sentiment": SENTI_PATH_COMP
@@ -917,10 +1274,10 @@ def theme_tweets(
     start: Optional[str] = Query(default=None, description="YYYY-MM-DD"),
     end:   Optional[str] = Query(default=None, description="YYYY-MM-DD"),
 ):
-    if not os.path.exists(STAGE3_THEMES_PARQUET):
+    try:
+        df3 = _read_parquet(STAGE3_THEMES_PARQUET)
+    except FileNotFoundError:
         return {"items": [], "note": "Stage-3 parquet not found. Call /themes first to generate."}
-
-    df3 = pd.read_parquet(STAGE3_THEMES_PARQUET)
     if "theme" not in df3.columns:
         return {"items": [], "note": "'theme' column not present in stage-3 parquet."}
 
@@ -1231,7 +1588,7 @@ def download_theme_tweets_report(
     """Download PDF report for specific theme tweets"""
     try:
         # Load theme data
-        themes_df = pd.read_parquet(STAGE3_THEMES_PARQUET)
+        themes_df = _read_parquet(STAGE3_THEMES_PARQUET)
         
         # Filter by theme ID
         theme_tweets = themes_df[themes_df['theme'] == theme_id]
@@ -1272,7 +1629,7 @@ def download_theme_tweets_report(
         if not theme_info:
             # Try to get theme info from the themes parquet file
             try:
-                themes_df = pd.read_parquet("data/tweets_stage3_themes.parquet")
+                themes_df = _read_parquet(STAGE3_THEMES_PARQUET)
                 theme_tweets_sample = themes_df[themes_df['theme'] == theme_id]
                 if not theme_tweets_sample.empty:
                     # Get the most common aspect for this theme

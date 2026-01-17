@@ -14,7 +14,8 @@ if sys.platform == "win32":
         # If stdout/stderr don't have a buffer, skip the fix
         pass
 
-FORCE_TFIDF = os.getenv("THEMES_EMB_BACKEND", "").lower() == "tfidf"
+# Force TF-IDF for faster processing (Option 2)
+FORCE_TFIDF = True  # Always use TF-IDF instead of Sentence Transformers for faster clustering
 
 _STOP = {
     "walmart","costco","rt","amp","https","http","co","www","com","org","net",
@@ -263,8 +264,8 @@ def compute_themes_payload(
 
     texts = df[text_col].astype(str).tolist()
 
-    # ---------- Optimized Processing: Sample data for faster processing ----------
-    max_samples = 5000  # Limit to 3000 tweets for faster processing
+    # ---------- Optimized Processing: Sample data for faster processing (Option 1) ----------
+    max_samples = 3000  # Reduced from 5000 for faster processing
     if len(df) > max_samples:
         df_sample = df.sample(n=max_samples, random_state=42)
         texts_to_process = df_sample[text_col].astype(str).tolist()
@@ -272,25 +273,12 @@ def compute_themes_payload(
         df_sample = df
         texts_to_process = texts
 
-    # ---------- Embeddings: ST if available, else TF-IDF ----------
-    emb = None
-    if not FORCE_TFIDF:
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-            model = SentenceTransformer(emb_model)
-            emb = model.encode(
-                texts_to_process, batch_size=32, convert_to_numpy=True,
-                normalize_embeddings=True, show_progress_bar=False
-            )
-        except Exception:
-            emb = None
-
-    if emb is None:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.preprocessing import normalize
-        vec = TfidfVectorizer(max_features=3000, stop_words="english", ngram_range=(1,2))  # Reduced features
-        emb = vec.fit_transform(texts_to_process).astype("float32")
-        emb = normalize(emb)
+    # ---------- Embeddings: Use TF-IDF only (Option 2: Faster than Sentence Transformers) ----------
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.preprocessing import normalize
+    vec = TfidfVectorizer(max_features=3000, stop_words="english", ngram_range=(1,2))  # Reduced features
+    emb = vec.fit_transform(texts_to_process).astype("float32")
+    emb = normalize(emb)
 
     # ---------- Clustering (Optimized) ----------
     from sklearn.cluster import KMeans
@@ -300,24 +288,20 @@ def compute_themes_payload(
     km = KMeans(n_clusters=k, random_state=42, n_init=3)  # Reduced n_init for speed
     labels = km.fit_predict(emb)
     
-    # Map labels back to full dataset
+    # Option 1: Skip full encoding - only assign themes to sampled rows, assign remaining to largest cluster
     if len(df) > max_samples:
-        # For sampled data, assign clusters to nearest centroids for remaining data
-        remaining_texts = df[~df.index.isin(df_sample.index)][text_col].astype(str).tolist()
-        if remaining_texts:
-            if not FORCE_TFIDF and 'model' in locals():
-                remaining_embeddings = model.encode(remaining_texts, batch_size=32, show_progress_bar=False)
-            else:
-                remaining_embeddings = vec.transform(remaining_texts).astype("float32")
-                remaining_embeddings = normalize(remaining_embeddings)
-            
-            remaining_labels = km.predict(remaining_embeddings)
-            
-            # Combine labels
-            df.loc[df_sample.index, "theme"] = labels
-            df.loc[~df.index.isin(df_sample.index), "theme"] = remaining_labels
-        else:
-            df["theme"] = labels
+        # Assign themes to sampled rows
+        df.loc[df_sample.index, "theme"] = labels
+        
+        # Find the largest cluster from sampled data
+        from collections import Counter
+        label_counts = Counter(labels)
+        largest_cluster = label_counts.most_common(1)[0][0] if label_counts else 0
+        
+        # Assign all remaining rows to the largest cluster (skip encoding for speed)
+        remaining_indices = df[~df.index.isin(df_sample.index)].index
+        df.loc[remaining_indices, "theme"] = largest_cluster
+        print(f"[Themes] Assigned {len(remaining_indices)} remaining rows to largest cluster {largest_cluster} (skipped encoding for speed)")
     else:
         df["theme"] = labels
 
@@ -575,15 +559,18 @@ def compute_themes_payload(
     counts = df["theme"].value_counts().to_dict()
     ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
 
-    # If we don't have enough clusters, generate more (keep your existing fallback)
+    # If we don't have enough clusters, generate more (use TF-IDF for consistency)
     if len(ranked) < n_clusters:
         additional_clusters_needed = n_clusters - len(ranked)
         temp_n_clusters = n_clusters + additional_clusters_needed + 2  # Add buffer
         from sklearn.cluster import KMeans
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(emb_model)
-        embeddings = model.encode(df[text_col].astype(str).tolist())
-        kmeans = KMeans(n_clusters=temp_n_clusters, random_state=42, n_init=10)
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.preprocessing import normalize
+        # Use TF-IDF instead of Sentence Transformers for faster processing
+        vec_fallback = TfidfVectorizer(max_features=3000, stop_words="english", ngram_range=(1,2))
+        embeddings = vec_fallback.fit_transform(df[text_col].astype(str).tolist()).astype("float32")
+        embeddings = normalize(embeddings)
+        kmeans = KMeans(n_clusters=temp_n_clusters, random_state=42, n_init=3)  # Reduced n_init for speed
         df["theme"] = kmeans.fit_predict(embeddings)
         counts = df["theme"].value_counts().to_dict()
         ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
