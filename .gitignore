@@ -21,3 +21,6 @@ models/
 node_modules/
 dist/
 build/
+
+# Data folders (data stored in S3, not in git)
+data_full/
