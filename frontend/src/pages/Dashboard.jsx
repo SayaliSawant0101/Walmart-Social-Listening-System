@@ -722,24 +722,29 @@ export default function Dashboard() {
     const walmartAgg =
       trend && trend.length > 0
         ? timePeriod === "daily"
-          ? trend
+          ? [...trend].sort((a, b) => new Date(a.date) - new Date(b.date))
           : aggregateData(trend, timePeriod)
         : [];
 
     const costcoAgg =
       competitorTrend && competitorTrend.length > 0
         ? timePeriod === "daily"
-          ? competitorTrend
+          ? [...competitorTrend].sort((a, b) => new Date(a.date) - new Date(b.date))
           : aggregateData(competitorTrend, timePeriod)
         : [];
 
     // If "all", we don't need labels array for the chart because we use x values (time scale by category)
     // But Chart.js with "chart.js/auto" will handle category from x strings; still fine.
 
+    // Helper function to sort data points by date
+    const sortByDate = (points) => {
+      return [...points].sort((a, b) => new Date(a.x) - new Date(b.x));
+    };
+
     if ((selectedBrand === "walmart" || selectedBrand === "all") && walmartAgg.length > 0) {
-      const wPointsPos = timePeriod === "daily" ? makePointsDaily(walmartAgg, "positive") : walmartAgg.map(p => ({ x: p.date, y: Number(p.positive ?? 0), count: 0, total: 0 }));
-      const wPointsNeu = timePeriod === "daily" ? makePointsDaily(walmartAgg, "neutral") : walmartAgg.map(p => ({ x: p.date, y: Number(p.neutral ?? 0), count: 0, total: 0 }));
-      const wPointsNeg = timePeriod === "daily" ? makePointsDaily(walmartAgg, "negative") : walmartAgg.map(p => ({ x: p.date, y: Number(p.negative ?? 0), count: 0, total: 0 }));
+      const wPointsPos = sortByDate(timePeriod === "daily" ? makePointsDaily(walmartAgg, "positive") : walmartAgg.map(p => ({ x: p.date, y: Number(p.positive ?? 0), count: 0, total: 0 })));
+      const wPointsNeu = sortByDate(timePeriod === "daily" ? makePointsDaily(walmartAgg, "neutral") : walmartAgg.map(p => ({ x: p.date, y: Number(p.neutral ?? 0), count: 0, total: 0 })));
+      const wPointsNeg = sortByDate(timePeriod === "daily" ? makePointsDaily(walmartAgg, "negative") : walmartAgg.map(p => ({ x: p.date, y: Number(p.negative ?? 0), count: 0, total: 0 })));
 
       datasets.push(
         { label: "Walmart % Positive", data: wPointsPos, borderColor: "#22c55e", fill: false, borderDash: [], tension: 0.35 },
@@ -749,9 +754,9 @@ export default function Dashboard() {
     }
 
     if ((selectedBrand === "costco" || selectedBrand === "all") && costcoAgg.length > 0) {
-      const cPointsPos = timePeriod === "daily" ? makePointsDaily(costcoAgg, "positive") : costcoAgg.map(p => ({ x: p.date, y: Number(p.positive ?? 0), count: 0, total: 0 }));
-      const cPointsNeu = timePeriod === "daily" ? makePointsDaily(costcoAgg, "neutral") : costcoAgg.map(p => ({ x: p.date, y: Number(p.neutral ?? 0), count: 0, total: 0 }));
-      const cPointsNeg = timePeriod === "daily" ? makePointsDaily(costcoAgg, "negative") : costcoAgg.map(p => ({ x: p.date, y: Number(p.negative ?? 0), count: 0, total: 0 }));
+      const cPointsPos = sortByDate(timePeriod === "daily" ? makePointsDaily(costcoAgg, "positive") : costcoAgg.map(p => ({ x: p.date, y: Number(p.positive ?? 0), count: 0, total: 0 })));
+      const cPointsNeu = sortByDate(timePeriod === "daily" ? makePointsDaily(costcoAgg, "neutral") : costcoAgg.map(p => ({ x: p.date, y: Number(p.neutral ?? 0), count: 0, total: 0 })));
+      const cPointsNeg = sortByDate(timePeriod === "daily" ? makePointsDaily(costcoAgg, "negative") : costcoAgg.map(p => ({ x: p.date, y: Number(p.negative ?? 0), count: 0, total: 0 })));
 
       datasets.push(
         { label: "Costco % Positive", data: cPointsPos, borderColor: "#22c55e", fill: false, borderDash: [5, 5], tension: 0.35 },
@@ -760,7 +765,16 @@ export default function Dashboard() {
       );
     }
 
-    return { datasets };
+    // Collect all unique dates from all datasets and sort them
+    const allDates = new Set();
+    datasets.forEach(dataset => {
+      dataset.data.forEach(point => {
+        if (point.x) allDates.add(point.x);
+      });
+    });
+    const sortedLabels = Array.from(allDates).sort((a, b) => new Date(a) - new Date(b));
+
+    return { datasets, labels: sortedLabels };
   }, [trend, competitorTrend, timePeriod, selectedBrand, tweetCountsCache]);
 
   // Determine which summary to use based on selected brand
@@ -1276,8 +1290,34 @@ export default function Dashboard() {
                                 color: "#e2e8f0",
                                 font: { size: 9, weight: "bold" },
                                 padding: 8,
+
+                                // show line samples in legend
                                 usePointStyle: true,
-                                pointStyle: "circle",
+                                pointStyle: "line",
+
+                                // ✅ Make legend reflect dataset.borderDash by mapping it to legend's lineDash
+                                generateLabels: (chart) => {
+                                  const original =
+                                    Chart.defaults.plugins.legend.labels.generateLabels;
+                                  const labels = original(chart);
+
+                                  labels.forEach((l) => {
+                                    const ds = chart.data.datasets[l.datasetIndex];
+
+                                    // ensure correct colors
+                                    l.strokeStyle = ds.borderColor || l.strokeStyle;
+                                    l.fillStyle = ds.borderColor || l.fillStyle;
+
+                                    // IMPORTANT: legend uses `lineDash`, not `borderDash`
+                                    l.lineDash = ds.borderDash || [];
+                                    l.lineWidth = ds.borderWidth ?? 2;
+
+                                    // optional: make the legend line a bit longer/thicker
+                                    l.pointStyleWidth = 40;
+                                  });
+
+                                  return labels;
+                                },
                               },
                             },
                             tooltip: {
@@ -1303,7 +1343,6 @@ export default function Dashboard() {
                                   const label = ctx.dataset?.label || "";
                                   const pct = Number(ctx.raw?.y ?? 0);
                                   const count = Number(ctx.raw?.count ?? 0);
-                                  // ✅ shows counts (not 0) because count is embedded
                                   return `${label}: ${count} tweets (${pct.toFixed(1)}%)`;
                                 },
                                 afterBody: () => "Click for detailed breakdown",
@@ -1318,8 +1357,16 @@ export default function Dashboard() {
                               ticks: { color: "#94a3b8", font: { size: 8 }, padding: 2 },
                             },
                             x: {
+                              type: "category",
+                              labels: trendLineData.labels || [],
                               grid: { display: false },
-                              ticks: { color: "#94a3b8", font: { size: 8 }, padding: 2 },
+                              ticks: {
+                                color: "#94a3b8",
+                                font: { size: 8 },
+                                padding: 2,
+                                maxRotation: 45,
+                                minRotation: 45,
+                              },
                             },
                           },
                         }}
