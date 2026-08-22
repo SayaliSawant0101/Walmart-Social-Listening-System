@@ -2,6 +2,7 @@
 import React from "react";
 import ThemePanel from "../ThemePanel";
 import { useDate } from "../contexts/DateContext";
+import { trackDateRangeChange } from "../analytics";
 
 export default function ThemeAnalysis() {
   const { start, end, meta, setStart, setEnd, loading: metaLoading } = useDate();
@@ -30,7 +31,10 @@ export default function ThemeAnalysis() {
             <input
               type="date"
               value={start || ''}
-              onChange={(e) => setStart(e.target.value)}
+              onChange={(e) => {
+                setStart(e.target.value);
+                trackDateRangeChange({ page: "theme-analysis", changedField: "start", start: e.target.value, end });
+              }}
               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
               disabled={metaLoading}
             />
@@ -38,7 +42,10 @@ export default function ThemeAnalysis() {
             <input
               type="date"
               value={end || ''}
-              onChange={(e) => setEnd(e.target.value)}
+              onChange={(e) => {
+                setEnd(e.target.value);
+                trackDateRangeChange({ page: "theme-analysis", changedField: "end", start, end: e.target.value });
+              }}
               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
               disabled={metaLoading}
             />

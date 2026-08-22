@@ -1,0 +1,389 @@
+diff --git a/frontend/index.html b/frontend/index.html
+index 45af00c..6cfa8dc 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -5,16 +5,19 @@
+     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <title>AI-Powered Social Intelligence | Sayali Sawant</title>
+-    <!-- Google Analytics -->
+-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-K4KHGK52E0"></script>
+-    <script>
+-      window.dataLayer = window.dataLayer || [];
+-      function gtag(){dataLayer.push(arguments);}
+-      gtag('js', new Date());
+-      gtag('config', 'G-K4KHGK52E0');
+-    </script>
++    <!-- Google Tag Manager -->
++    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
++    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
++    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
++    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
++    })(window,document,'script','dataLayer','GTM-N9V3PRP5');</script>
++    <!-- End Google Tag Manager -->
+   </head>
+   <body>
++    <!-- Google Tag Manager (noscript) -->
++    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-N9V3PRP5"
++    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
++    <!-- End Google Tag Manager (noscript) -->
+     <div id="root"></div>
+     <script type="module" src="/src/main.jsx"></script>
+   </body>
+diff --git a/frontend/netlify.toml b/frontend/netlify.toml
+index c4c0fcb..d1d80b6 100644
+--- a/frontend/netlify.toml
++++ b/frontend/netlify.toml
+@@ -1,3 +1,8 @@
+ [build]
+   command = "VITE_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) npm run build"
+   publish = "dist"
++
++[[redirects]]
++  from = "/*"
++  to = "/index.html"
++  status = 200
+diff --git a/frontend/package-lock.json b/frontend/package-lock.json
+index 668208c..c99273e 100644
+--- a/frontend/package-lock.json
++++ b/frontend/package-lock.json
+@@ -14,7 +14,6 @@
+         "react": "^19.1.1",
+         "react-chartjs-2": "^5.3.0",
+         "react-dom": "^19.1.1",
+-        "react-ga4": "^3.0.1",
+         "react-router-dom": "^7.9.4"
+       },
+       "devDependencies": {
+@@ -3618,12 +3617,6 @@
+         "react": "^19.2.0"
+       }
+     },
+-    "node_modules/react-ga4": {
+-      "version": "3.0.1",
+-      "resolved": "https://registry.npmjs.org/react-ga4/-/react-ga4-3.0.1.tgz",
+-      "integrity": "sha512-GyCc01bSheWXjzGDyHsXMOqk/SP5Cf/JrcJTg4hcpKx4eeSwaJKpJUc+ipF4ffLTZkmabmf3ZGBv4OKHTXNXyA==",
+-      "license": "MIT"
+-    },
+     "node_modules/react-refresh": {
+       "version": "0.17.0",
+       "resolved": "https://registry.npmjs.org/react-refresh/-/react-refresh-0.17.0.tgz",
+diff --git a/frontend/package.json b/frontend/package.json
+index 88ccfc0..2ddff62 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -16,7 +16,6 @@
+     "react": "^19.1.1",
+     "react-chartjs-2": "^5.3.0",
+     "react-dom": "^19.1.1",
+-    "react-ga4": "^3.0.1",
+     "react-router-dom": "^7.9.4"
+   },
+   "devDependencies": {
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index 41da0c4..43d2963 100644
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -1,10 +1,25 @@
+ import React from "react";
+-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
++import { BrowserRouter as Router, Routes, Route, useLocation } from "react-router-dom";
+ import { DateProvider } from "./contexts/DateContext";
+ import Navigation from "./components/Navigation";
+ import Dashboard from "./pages/Dashboard";
+ import ThemeAnalysis from "./pages/ThemeAnalysis";
+ import AIInsights from "./pages/AIInsights";
++import { trackVirtualPageview } from "./analytics";
++
++// react-router-dom handles navigation client-side (no full page load), so
++// GTM's built-in triggers never see it happen. This component pushes a
++// "virtual_pageview" event to the dataLayer every time the route changes,
++// which we'll use in GTM as the trigger for a GA4 page_view-equivalent tag.
++function RouteTracker() {
++  const location = useLocation();
++
++  React.useEffect(() => {
++    trackVirtualPageview(location.pathname + location.search, document.title);
++  }, [location]);
++
++  return null;
++}
+ 
+ export default function App() {
+   React.useEffect(() => {
+@@ -15,6 +30,7 @@ export default function App() {
+     <DateProvider>
+       <Router>
+         <div className="min-h-screen bg-slate-900 text-white">
++          <RouteTracker />
+           <Navigation />
+ 
+           <main className="ml-48">
+diff --git a/frontend/src/ThemePanel.jsx b/frontend/src/ThemePanel.jsx
+index 12cb12f..5f85cfe 100644
+--- a/frontend/src/ThemePanel.jsx
++++ b/frontend/src/ThemePanel.jsx
+@@ -2,6 +2,7 @@
+ import React, { useState, useEffect } from "react";
+ import { fetchThemes, fetchThemesCompetitor } from "./api";
+ import { useDate } from "./contexts/DateContext";
++import { trackGenerateThemes } from "./analytics";
+ 
+ export default function ThemePanel() {
+   const { start, end } = useDate();
+@@ -14,6 +15,8 @@ export default function ThemePanel() {
+   const [errCostco, setErrCostco] = useState("");
+ 
+   async function run() {
++    trackGenerateThemes({ themeCount, start, end });
++
+     setLoading(true);
+     setLoadingCostco(true);
+     setErr("");
+diff --git a/frontend/src/analytics.js b/frontend/src/analytics.js
+new file mode 100644
+index 0000000..fe9c833
+--- /dev/null
++++ b/frontend/src/analytics.js
+@@ -0,0 +1,77 @@
++// frontend/src/analytics.js
++//
++// Centralized helper for sending events into Google Tag Manager's dataLayer.
++// GTM (see index.html) picks these up via Custom Event triggers and forwards
++// them to GA4 as events. Keeping every push() call in one file means:
++//   - one place to see every event this app can send
++//   - one place to fix event naming/params if GA4's schema needs change
++//   - components stay free of raw dataLayer plumbing
++
++function pushEvent(eventName, params = {}) {
++  if (typeof window === "undefined") return;
++  window.dataLayer = window.dataLayer || [];
++  window.dataLayer.push({
++    event: eventName,
++    ...params,
++  });
++}
++
++/** Fired on every client-side route change (Dashboard / Theme Analysis / AI Insights). */
++export function trackVirtualPageview(pagePath, pageTitle) {
++  pushEvent("virtual_pageview", {
++    page_path: pagePath,
++    page_title: pageTitle,
++  });
++}
++
++/** Fired when a user edits the shared start/end date filter, on any page. */
++export function trackDateRangeChange({ page, changedField, start, end }) {
++  pushEvent("date_range_change", {
++    page,
++    changed_field: changedField, // "start" or "end"
++    date_start: start,
++    date_end: end,
++  });
++}
++
++/** Fired when the user clicks "Generate Themes" on the Theme Analysis page. */
++export function trackGenerateThemes({ themeCount, start, end }) {
++  pushEvent("generate_themes", {
++    theme_count: themeCount ?? "auto",
++    date_start: start,
++    date_end: end,
++  });
++}
++
++/** Fired when the user clicks "Generate Executive Summary" on AI Insights. */
++export function trackExecutiveSummary({ start, end }) {
++  pushEvent("generate_executive_summary", {
++    date_start: start,
++    date_end: end,
++  });
++}
++
++/** Fired when the user clicks "Generate Structured Brief" on AI Insights. */
++export function trackStructuredBrief({ keyword, start, end }) {
++  pushEvent("generate_structured_brief", {
++    keyword: keyword && keyword.trim() ? keyword.trim() : "(none)",
++    date_start: start,
++    date_end: end,
++  });
++}
++
++/** Fired when a user clicks into a chart point/bar to open a drilldown modal. */
++export function trackDashboardDrilldown({ chartName, label }) {
++  pushEvent("dashboard_drilldown", {
++    chart_name: chartName,
++    chart_label: label,
++  });
++}
++
++/** Fired when a user toggles a sentiment category on/off via the chart legend. */
++export function trackLegendToggle({ chartName, sentiment }) {
++  pushEvent("sentiment_legend_toggle", {
++    chart_name: chartName,
++    sentiment,
++  });
++}
+diff --git a/frontend/src/main.jsx b/frontend/src/main.jsx
+index 00f3fa1..b3ce4fa 100644
+--- a/frontend/src/main.jsx
++++ b/frontend/src/main.jsx
+@@ -2,9 +2,10 @@ import { StrictMode } from 'react'
+ import { createRoot } from 'react-dom/client'
+ import './index.css'
+ import App from './App.jsx'
+-import ReactGA from 'react-ga4'
+ 
+-ReactGA.initialize('G-K4KHGK52E0')
++// Note: GA4 is no longer initialized here directly. Google Tag Manager
++// (see index.html) now owns loading the Google tag and firing GA4 events.
++// See src/analytics.js for how the app pushes events into GTM's dataLayer.
+ 
+ createRoot(document.getElementById('root')).render(
+   <StrictMode>
+diff --git a/frontend/src/pages/AIInsights.jsx b/frontend/src/pages/AIInsights.jsx
+index 0ffc433..0b0e15a 100644
+--- a/frontend/src/pages/AIInsights.jsx
++++ b/frontend/src/pages/AIInsights.jsx
+@@ -1,6 +1,7 @@
+ // frontend/src/pages/AIInsights.jsx
+ import React, { useState } from "react";
+ import { useDate } from "../contexts/DateContext";
++import { trackExecutiveSummary, trackStructuredBrief, trackDateRangeChange } from "../analytics";
+ 
+ // Use the same env var pattern as api.js
+ const RAW_BASE_URL = import.meta.env.VITE_API_BASE_URL;
+@@ -26,6 +27,7 @@ export default function AIInsights() {
+ 
+   async function runExecutiveSummary() {
+     if (!start || !end) return;
++    trackExecutiveSummary({ start, end });
+     try {
+       setExecLoading(true);
+       setExecErr("");
+@@ -50,6 +52,7 @@ export default function AIInsights() {
+ 
+   async function runStructuredBrief() {
+     if (!start || !end) return;
++    trackStructuredBrief({ keyword: briefKeyword, start, end });
+     try {
+       setBriefLoading(true);
+       setBriefErr("");
+@@ -111,7 +114,10 @@ export default function AIInsights() {
+             <input
+               type="date"
+               value={start || ""}
+-              onChange={(e) => setStart(e.target.value)}
++              onChange={(e) => {
++                setStart(e.target.value);
++                trackDateRangeChange({ page: "ai-insights", changedField: "start", start: e.target.value, end });
++              }}
+               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white
+                          focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
+               disabled={metaLoading}
+@@ -120,7 +126,10 @@ export default function AIInsights() {
+             <input
+               type="date"
+               value={end || ""}
+-              onChange={(e) => setEnd(e.target.value)}
++              onChange={(e) => {
++                setEnd(e.target.value);
++                trackDateRangeChange({ page: "ai-insights", changedField: "end", start, end: e.target.value });
++              }}
+               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white
+                          focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
+               disabled={metaLoading}
+diff --git a/frontend/src/pages/Dashboard.jsx b/frontend/src/pages/Dashboard.jsx
+index 57d3874..c5e118e 100644
+--- a/frontend/src/pages/Dashboard.jsx
++++ b/frontend/src/pages/Dashboard.jsx
+@@ -14,6 +14,7 @@ import {
+   getCompetitorAspectSentimentSplit,
+ } from "../api";
+ import { useDate } from "../contexts/DateContext";
++import { trackDateRangeChange, trackDashboardDrilldown, trackLegendToggle } from "../analytics";
+ 
+ // --- helpers ---
+ function iso(x) {
+@@ -426,6 +427,8 @@ export default function Dashboard() {
+             const chart = legend.chart;
+             const sentiment = (legendItem.text || "").toLowerCase();
+ 
++            trackLegendToggle({ chartName: "sentiment_trend", sentiment });
++
+             chart.data.datasets.forEach((ds) => {
+               if ((ds.sentimentKey || "").toLowerCase() === sentiment) {
+                 ds.hidden = !ds.hidden;
+@@ -866,7 +869,11 @@ export default function Dashboard() {
+                           value={start || ""}
+                           min={meta?.min || ""}
+                           max={end || meta?.max || ""}
+-                          onChange={(e) => setStart(iso(e.target.value))}
++                          onChange={(e) => {
++                            const v = iso(e.target.value);
++                            setStart(v);
++                            trackDateRangeChange({ page: "dashboard", changedField: "start", start: v, end });
++                          }}
+                           className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                         />
+                         <span className="text-slate-500 text-xs">to</span>
+@@ -875,7 +882,11 @@ export default function Dashboard() {
+                           value={end || ""}
+                           min={start || meta?.min || ""}
+                           max={meta?.max || ""}
+-                          onChange={(e) => setEnd(iso(e.target.value))}
++                          onChange={(e) => {
++                            const v = iso(e.target.value);
++                            setEnd(v);
++                            trackDateRangeChange({ page: "dashboard", changedField: "end", start, end: v });
++                          }}
+                           className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
+                         />
+                       </div>
+@@ -1280,7 +1291,10 @@ export default function Dashboard() {
+                             const ds = chart.data.datasets[el.datasetIndex];
+                             const point = ds.data[el.index];
+                             const actualISO = point?.x; // ✅ always correct
+-                            if (actualISO) loadDateAspects(actualISO);
++                            if (actualISO) {
++                              trackDashboardDrilldown({ chartName: "sentiment_trend", label: actualISO });
++                              loadDateAspects(actualISO);
++                            }
+                           },
+                           interaction: { intersect: false, mode: "index" },
+                           plugins: {
+diff --git a/frontend/src/pages/ThemeAnalysis.jsx b/frontend/src/pages/ThemeAnalysis.jsx
+index 7399b1b..332c8c6 100644
+--- a/frontend/src/pages/ThemeAnalysis.jsx
++++ b/frontend/src/pages/ThemeAnalysis.jsx
+@@ -2,6 +2,7 @@
+ import React from "react";
+ import ThemePanel from "../ThemePanel";
+ import { useDate } from "../contexts/DateContext";
++import { trackDateRangeChange } from "../analytics";
+ 
+ export default function ThemeAnalysis() {
+   const { start, end, meta, setStart, setEnd, loading: metaLoading } = useDate();
+@@ -30,7 +31,10 @@ export default function ThemeAnalysis() {
+             <input
+               type="date"
+               value={start || ''}
+-              onChange={(e) => setStart(e.target.value)}
++              onChange={(e) => {
++                setStart(e.target.value);
++                trackDateRangeChange({ page: "theme-analysis", changedField: "start", start: e.target.value, end });
++              }}
+               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
+               disabled={metaLoading}
+             />
+@@ -38,7 +42,10 @@ export default function ThemeAnalysis() {
+             <input
+               type="date"
+               value={end || ''}
+-              onChange={(e) => setEnd(e.target.value)}
++              onChange={(e) => {
++                setEnd(e.target.value);
++                trackDateRangeChange({ page: "theme-analysis", changedField: "end", start, end: e.target.value });
++              }}
+               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
+               disabled={metaLoading}
+             />

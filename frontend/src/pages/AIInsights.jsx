@@ -1,6 +1,7 @@
 // frontend/src/pages/AIInsights.jsx
 import React, { useState } from "react";
 import { useDate } from "../contexts/DateContext";
+import { trackExecutiveSummary, trackStructuredBrief, trackDateRangeChange } from "../analytics";
 
 // Use the same env var pattern as api.js
 const RAW_BASE_URL = import.meta.env.VITE_API_BASE_URL;
@@ -26,6 +27,7 @@ export default function AIInsights() {
 
   async function runExecutiveSummary() {
     if (!start || !end) return;
+    trackExecutiveSummary({ start, end });
     try {
       setExecLoading(true);
       setExecErr("");
@@ -50,6 +52,7 @@ export default function AIInsights() {
 
   async function runStructuredBrief() {
     if (!start || !end) return;
+    trackStructuredBrief({ keyword: briefKeyword, start, end });
     try {
       setBriefLoading(true);
       setBriefErr("");
@@ -111,7 +114,10 @@ export default function AIInsights() {
             <input
               type="date"
               value={start || ""}
-              onChange={(e) => setStart(e.target.value)}
+              onChange={(e) => {
+                setStart(e.target.value);
+                trackDateRangeChange({ page: "ai-insights", changedField: "start", start: e.target.value, end });
+              }}
               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white
                          focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
               disabled={metaLoading}
@@ -120,7 +126,10 @@ export default function AIInsights() {
             <input
               type="date"
               value={end || ""}
-              onChange={(e) => setEnd(e.target.value)}
+              onChange={(e) => {
+                setEnd(e.target.value);
+                trackDateRangeChange({ page: "ai-insights", changedField: "end", start, end: e.target.value });
+              }}
               className="px-1 py-0.5 bg-slate-800/50 border border-slate-600 rounded text-xs text-white
                          focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all ml-0.5"
               disabled={metaLoading}

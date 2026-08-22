@@ -14,6 +14,7 @@ import {
   getCompetitorAspectSentimentSplit,
 } from "../api";
 import { useDate } from "../contexts/DateContext";
+import { trackDateRangeChange, trackDashboardDrilldown, trackLegendToggle } from "../analytics";
 
 // --- helpers ---
 function iso(x) {
@@ -425,6 +426,8 @@ export default function Dashboard() {
           onClick: (e, legendItem, legend) => {
             const chart = legend.chart;
             const sentiment = (legendItem.text || "").toLowerCase();
+
+            trackLegendToggle({ chartName: "sentiment_trend", sentiment });
 
             chart.data.datasets.forEach((ds) => {
               if ((ds.sentimentKey || "").toLowerCase() === sentiment) {
@@ -866,7 +869,11 @@ export default function Dashboard() {
                           value={start || ""}
                           min={meta?.min || ""}
                           max={end || meta?.max || ""}
-                          onChange={(e) => setStart(iso(e.target.value))}
+                          onChange={(e) => {
+                            const v = iso(e.target.value);
+                            setStart(v);
+                            trackDateRangeChange({ page: "dashboard", changedField: "start", start: v, end });
+                          }}
                           className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
                         />
                         <span className="text-slate-500 text-xs">to</span>
@@ -875,7 +882,11 @@ export default function Dashboard() {
                           value={end || ""}
                           min={start || meta?.min || ""}
                           max={meta?.max || ""}
-                          onChange={(e) => setEnd(iso(e.target.value))}
+                          onChange={(e) => {
+                            const v = iso(e.target.value);
+                            setEnd(v);
+                            trackDateRangeChange({ page: "dashboard", changedField: "end", start, end: v });
+                          }}
                           className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-xs text-white focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 transition-all"
                         />
                       </div>
@@ -1280,7 +1291,10 @@ export default function Dashboard() {
                             const ds = chart.data.datasets[el.datasetIndex];
                             const point = ds.data[el.index];
                             const actualISO = point?.x; // ✅ always correct
-                            if (actualISO) loadDateAspects(actualISO);
+                            if (actualISO) {
+                              trackDashboardDrilldown({ chartName: "sentiment_trend", label: actualISO });
+                              loadDateAspects(actualISO);
+                            }
                           },
                           interaction: { intersect: false, mode: "index" },
                           plugins: {

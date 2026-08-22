@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from "react";
 import { fetchThemes, fetchThemesCompetitor } from "./api";
 import { useDate } from "./contexts/DateContext";
+import { trackGenerateThemes } from "./analytics";
 
 export default function ThemePanel() {
   const { start, end } = useDate();
@@ -14,6 +15,8 @@ export default function ThemePanel() {
   const [errCostco, setErrCostco] = useState("");
 
   async function run() {
+    trackGenerateThemes({ themeCount, start, end });
+
     setLoading(true);
     setLoadingCostco(true);
     setErr("");
